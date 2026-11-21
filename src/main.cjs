@@ -1,6 +1,6 @@
 const {
   app, BrowserWindow, WebContentsView, Menu, session, protocol, net,
-  ipcMain, clipboard, dialog, shell
+  ipcMain, clipboard, dialog, shell, screen, nativeTheme
 } = require('electron');
 const { existsSync } = require('node:fs');
 const path = require('node:path');
@@ -10,6 +10,9 @@ const { createProfile, webURL, resolveAddress, MAX_HISTORY } = require('./profil
 const { createAgentBridge } = require('./agent/bridge.cjs');
 const { validatePreferencesPatch } = require('./agent/preferences.cjs');
 const { createExtensionManager } = require('./extensions.cjs');
+const { listBrowserCommands, validateBrowserCommand } = require('./commands.cjs');
+const { defaultCustomization, updateCustomization, keyboardAccelerator } = require('./customization.cjs');
+const { collectPageText } = require('./page-content.cjs');
 
 const APP_URL = 'relay://shell/index.html';
 const RENDERER_DIR = path.join(__dirname, 'renderer');
@@ -20,6 +23,7 @@ const PERMISSIONS = new Map([
   ['notifications', 'show notifications'],
   ['clipboard-read', 'read from your clipboard']
 ]);
+const STORAGE_TYPES = ['backgroundFetch', 'fileSystems', 'indexedDB', 'localStorage', 'serviceWorkers', 'webSQL'];
 
 app.setName('Relay Browser');
 app.enableSandbox();
@@ -44,6 +48,7 @@ let agentStopped = false;
 const tabs = [];
 const closedTabs = [];
 const activeDownloads = new Map();
+const sitePermissions = new Map();
 
 function activeTab() {
   return tabs.find((tab) => tab.id === activeTabId);
@@ -78,8 +83,7 @@ function broadcast() {
   });
 }
 
-function getState() {
-  const mcpPath = app.isPackaged ? path.join(process.resourcesPath, 'agent', 'mcp.cjs') : path.join(__dirname, 'agent', 'mcp.cjs');
+function getBrowserState() {
   return {
     tabs: tabs.map(({ view, findRequestId, ...tab }) => {
       const wc = view?.webContents;
@@ -96,15 +100,27 @@ function getState() {
     }),
     activeTabId,
     preferences: { ...profile.data.preferences },
+    customization: profile.data.customization,
     bookmarks: profile.data.bookmarks,
     history: profile.data.history,
     downloads: profile.data.downloads.map(({ file, ...download }) => download),
     extensions: extensions.list(),
-    agent: { ...agent.status(), mcpCommand: 'node', mcpArgs: [mcpPath], mcpEnv: { RELAY_AGENT_FILE: discoveryPath } },
+    recentlyClosedTabs: closedTabs.map((tab) => ({ ...tab })),
+    sitePermissions: Array.from(sitePermissions.values()),
+    window: {
+      bounds: win.getBounds(), normalBounds: win.getNormalBounds(), minimized: win.isMinimized(),
+      displays: screen.getAllDisplays().map(({ id, bounds, workArea, scaleFactor }) => ({ id, bounds, workArea, scaleFactor }))
+    },
     maximized: win.isMaximized(),
     fullScreen: win.isFullScreen(),
-    version: app.getVersion()
+    version: app.getVersion(),
+    runtime: { chromium: process.versions.chrome, electron: process.versions.electron, platform: process.platform, arch: process.arch, systemDarkTheme: nativeTheme.shouldUseDarkColors }
   };
+}
+
+function getState() {
+  const mcpPath = app.isPackaged ? path.join(process.resourcesPath, 'agent', 'mcp.cjs') : path.join(__dirname, 'agent', 'mcp.cjs');
+  return { ...getBrowserState(), agent: { ...agent.status(), mcpCommand: 'node', mcpArgs: [mcpPath], mcpEnv: { RELAY_AGENT_FILE: discoveryPath } } };
 }
 
 function updatePreferences(patch) {
@@ -117,6 +133,26 @@ function updatePreferences(patch) {
   }
   broadcast();
   return { ...profile.data.preferences };
+}
+
+function saveCustomization(next) {
+  if (closing) throw new Error('Relay is closing.');
+  const previous = profile.data.customization;
+  profile.data.customization = next;
+  try { saveProfile(); } catch (error) {
+    profile.data.customization = previous;
+    throw error;
+  }
+  broadcast();
+  return next;
+}
+
+function patchCustomization(patch) {
+  return saveCustomization(updateCustomization(profile.data.customization, patch));
+}
+
+function resetCustomization() {
+  return saveCustomization(defaultCustomization());
 }
 
 function setViewport(bounds) {
@@ -309,12 +345,23 @@ function closeTab(tab, remember = true) {
   saveSoon();
 }
 
-function pinTab(tab) {
+function pinTab(tab, pinned = !tab.pinned) {
+  if (tab.pinned === pinned) return;
   tabs.splice(tabs.indexOf(tab), 1);
-  tab.pinned = !tab.pinned;
+  tab.pinned = pinned;
   const boundary = tabs.findIndex((item) => !item.pinned);
   tabs.splice(boundary === -1 ? tabs.length : boundary, 0, tab);
   saveSoon();
+}
+
+function moveTab(tab, index) {
+  tabs.splice(tabs.indexOf(tab), 1);
+  const firstUnpinned = tabs.findIndex((item) => !item.pinned);
+  const boundary = firstUnpinned === -1 ? tabs.length : firstUnpinned;
+  const position = tab.pinned ? Math.min(index, boundary) : Math.max(index, boundary);
+  tabs.splice(position, 0, tab);
+  saveSoon();
+  return { index: tabs.indexOf(tab) };
 }
 
 function goHome(tab) {
@@ -344,35 +391,36 @@ function trackDownload(item, wc) {
   broadcast();
 }
 
+function permissionKey(permission, origin) {
+  const url = webURL(origin);
+  return url?.protocol === 'https:' && PERMISSIONS.has(permission) ? `${url.origin} ${permission}` : null;
+}
+
 function configurePermissions(ses) {
-  const allowed = new Set();
   const pending = new Map();
-  function key(permission, origin) {
-    const url = webURL(origin);
-    return url?.protocol === 'https:' && PERMISSIONS.has(permission) ? `${url.origin} ${permission}` : null;
-  }
   ses.setPermissionCheckHandler((_webContents, permission, origin) => {
     if (permission === 'fullscreen') return Boolean(webURL(origin));
-    return allowed.has(key(permission, origin));
+    return sitePermissions.has(permissionKey(permission, origin));
   });
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
     const origin = webURL(details.requestingUrl || wc.getURL());
     if (permission === 'fullscreen') return callback(Boolean(origin));
-    const permissionKey = key(permission, origin?.href);
-    if (!permissionKey || wc !== activeTab()?.view?.webContents || details.isMainFrame === false || origin.origin !== webURL(wc.getURL())?.origin) return callback(false);
-    if (allowed.has(permissionKey)) return callback(true);
-    if (!pending.has(permissionKey)) {
+    const key = permissionKey(permission, origin?.href);
+    if (!key || wc !== activeTab()?.view?.webContents || details.isMainFrame === false || origin.origin !== webURL(wc.getURL())?.origin) return callback(false);
+    if (sitePermissions.has(key)) return callback(true);
+    if (!pending.has(key)) {
       const request = dialog.showMessageBox(win, {
         type: 'question', title: 'Website permission', message: `Allow ${origin.hostname} to ${PERMISSIONS.get(permission)}?`,
         detail: 'This choice applies until you quit Relay Browser.', buttons: ['Block', 'Allow'], defaultId: 0, cancelId: 0, noLink: true
       }).then(({ response }) => {
         if (response !== 1 || wc.isDestroyed() || webURL(wc.getURL())?.origin !== origin.origin) return false;
-        allowed.add(permissionKey);
+        sitePermissions.set(key, { origin: origin.origin, permission });
+        broadcast();
         return true;
-      }).catch(() => false).finally(() => pending.delete(permissionKey));
-      pending.set(permissionKey, request);
+      }).catch(() => false).finally(() => pending.delete(key));
+      pending.set(key, request);
     }
-    void pending.get(permissionKey).then(callback);
+    void pending.get(key).then(callback);
   });
   ses.setDevicePermissionHandler(() => false);
 }
@@ -415,6 +463,62 @@ function toggleBookmark(tab) {
   saveSoon();
 }
 
+function updateBookmark({ id, url, title }) {
+  const existing = id && profile.data.bookmarks.find((item) => item.id === id);
+  if (id && !existing) throw new TypeError('This bookmark no longer exists.');
+  const address = url ? webURL(url) : webURL(existing?.url);
+  if (!address) throw new TypeError('Use an HTTP or HTTPS address for the bookmark.');
+  const bookmark = { id: existing?.id || randomUUID(), url: address.href, title: title?.trim() || existing?.title || address.hostname };
+  if (existing) Object.assign(existing, bookmark);
+  else profile.data.bookmarks.unshift(bookmark);
+  profile.data.bookmarks.length = Math.min(profile.data.bookmarks.length, 1000);
+  saveSoon();
+  return bookmark;
+}
+
+function setWindowBounds(changes) {
+  const bounds = { ...win.getNormalBounds(), ...changes };
+  const isOnScreen = screen.getAllDisplays().some(({ workArea }) => {
+    const right = bounds.x + bounds.width;
+    return right - 190 >= workArea.x && right <= workArea.x + workArea.width + 8 &&
+      bounds.y >= workArea.y - 8 && bounds.y + 48 <= workArea.y + workArea.height;
+  });
+  if (!isOnScreen) throw new RangeError('Position the browser window so its title bar remains on a display.');
+  if (win.isFullScreen()) throw new TypeError('Exit fullscreen before changing window bounds.');
+  if (win.isMaximized()) win.unmaximize();
+  if (win.isMinimized()) win.restore();
+  win.setBounds(bounds);
+  return win.getBounds();
+}
+
+async function clearBrowsingData(types) {
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'warning', title: 'Clear browsing data', message: 'Clear the browser data requested by the agent?',
+    detail: `Requested: ${types.join(', ')}. This may sign you out of websites. Downloaded files are kept.`,
+    buttons: ['Cancel', 'Clear data'], defaultId: 0, cancelId: 0, noLink: true
+  });
+  if (response !== 1) return { cleared: [] };
+  const dataTypes = types.filter((type) => type === 'cookies' || type === 'cache');
+  if (types.includes('storage')) dataTypes.push(...STORAGE_TYPES);
+  if (dataTypes.length) await browserSession.clearData({ dataTypes });
+  if (types.includes('history')) profile.data.history = [];
+  if (types.includes('downloads')) profile.data.downloads = profile.data.downloads.filter(({ id }) => activeDownloads.has(id));
+  saveProfile();
+  return { cleared: types };
+}
+
+async function readPage({ id, selectionOnly = false, maxCharacters = 8000 }) {
+  const tab = requireTab(id);
+  const wc = tab.view?.webContents;
+  if (!wc || !webURL(wc.getURL()) || tab.error || wc.isLoadingMainFrame()) throw new TypeError('Open a webpage and wait for it to finish loading.');
+  const url = wc.getURL();
+  const args = JSON.stringify([maxCharacters, selectionOnly]);
+  const code = '(' + collectPageText.toString() + ')(...' + args + ');';
+  const result = await wc.executeJavaScriptInIsolatedWorld(1101, [{ code }]);
+  if (wc.isDestroyed() || wc.getURL() !== url) throw new TypeError('The tab navigated before its text could be read.');
+  return { tabId: tab.id, url, title: tab.title, source: 'untrusted-web-content', ...result };
+}
+
 function adjustZoom(factor) {
   if (!Number.isFinite(factor) || factor < 0.25 || factor > 5) throw new Error('Zoom must be between 25% and 500%.');
   activeTab()?.view?.webContents.setZoomFactor(factor);
@@ -424,13 +528,18 @@ async function runAction(name, p = {}) {
   if (closing) throw new Error('Relay is closing.');
   const wc = activeTab()?.view?.webContents;
   switch (name) {
-    case 'newTab': addTab(p.input ? resolveAddress(p.input, profile.data.preferences.searchEngine) : ''); break;
+    case 'newTab': return { id: addTab(p.input ? resolveAddress(p.input, profile.data.preferences.searchEngine) : '').id };
     case 'selectTab': selectTab(requireTab(p.id)); break;
     case 'closeTab': closeTab(requireTab(p.id)); break;
-    case 'pinTab': pinTab(requireTab(p.id)); break;
+    case 'duplicateTab': {
+      const tab = requireTab(p.id);
+      return { id: addTab(tab.url, { pinned: tab.pinned }).id };
+    }
+    case 'moveTab': return moveTab(requireTab(p.id), p.index);
+    case 'pinTab': pinTab(requireTab(p.id), p.pinned); break;
     case 'muteTab': {
       const target = requireTab(p.id).view?.webContents;
-      if (target) target.setAudioMuted(!target.isAudioMuted());
+      if (target) target.setAudioMuted(p.muted ?? !target.isAudioMuted());
       break;
     }
     case 'navigate': navigate(requireTab(), resolveAddress(p.input, profile.data.preferences.searchEngine)); break;
@@ -450,12 +559,23 @@ async function runAction(name, p = {}) {
       break;
     }
     case 'preferences': return updatePreferences(p);
+    case 'customization': return patchCustomization(p);
+    case 'resetCustomization': return resetCustomization();
+    case 'runCustomCommand': {
+      const contribution = profile.data.customization.buttons.find((item) => item.id === p.id);
+      if (!contribution) throw new TypeError('This custom button no longer exists.');
+      return runContribution(contribution);
+    }
     case 'bookmarkToggle': toggleBookmark(requireTab()); break;
+    case 'updateBookmark': return updateBookmark(p);
     case 'removeBookmark':
       profile.data.bookmarks = profile.data.bookmarks.filter(({ id }) => id !== p.id);
       saveSoon();
       break;
     case 'clearHistory': profile.data.history = []; saveSoon(); break;
+    case 'clearBrowsingData': return clearBrowsingData(p.types);
+    case 'revokeSitePermission':
+      return { revoked: sitePermissions.delete(permissionKey(p.permission, p.origin)) };
     case 'loadExtension': return extensions.loadUnpacked();
     case 'installExtension': return extensions.installFromStore(p.input);
     case 'removeExtension': {
@@ -503,18 +623,45 @@ async function runAction(name, p = {}) {
     case 'window':
       if (p.command === 'minimize') win.minimize();
       else if (p.command === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize();
+      else if (p.command === 'restore') { win.restore(); if (win.isMaximized()) win.unmaximize(); }
       else if (p.command === 'close') win.close();
       else throw new Error('Unknown window command.');
       break;
-    case 'fullScreen': win.setFullScreen(!win.isFullScreen()); break;
+    case 'setWindowBounds': return setWindowBounds(p);
+    case 'fullScreen': win.setFullScreen(p.enabled ?? !win.isFullScreen()); break;
+    case 'openPanel':
+      if (win.isMinimized()) win.restore();
+      send('relay:panel', p.panel);
+      break;
     case 'find':
       if (wc && typeof p.query === 'string' && p.query && p.query.length <= 1000) {
-        activeTab().findRequestId = wc.findInPage(p.query, { findNext: p.findNext === true, forward: p.forward !== false });
+        activeTab().findRequestId = wc.findInPage(p.query, { findNext: p.findNext !== true, forward: p.forward !== false });
       }
       break;
     case 'stopFind': wc?.stopFindInPage('clearSelection'); break;
+    case 'readPage': return readPage(p);
     case 'zoom': adjustZoom(p.factor); break;
     default: throw new Error('Unknown browser action.');
+  }
+}
+
+async function runBrowserCommand(name, args) {
+  const valid = validateBrowserCommand(name, args);
+  try {
+    if (name === 'clearHistory') return await clearBrowsingData(['history']);
+    if (name === 'window' && valid.command === 'maximize') {
+      if (!win.isMaximized()) win.maximize();
+      return;
+    }
+    return await runAction(name, valid);
+  } finally {
+    broadcast();
+  }
+}
+
+async function runContribution(contribution) {
+  for (const { command, arguments: args } of contribution.steps ?? [contribution]) {
+    await runBrowserCommand(command, args);
   }
 }
 
@@ -525,6 +672,17 @@ function attempt(work) {
 function installShortcuts(wc) {
   wc.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || input.isComposing || input.meta) return;
+    const keyBinding = keyboardAccelerator(input);
+    const shortcut = profile.data.customization.shortcuts.find(({ accelerator }) => accelerator.toLowerCase() === keyBinding);
+    if (shortcut) {
+      event.preventDefault();
+      if (!input.isAutoRepeat) {
+        void runContribution(shortcut).catch((error) => {
+          if (win && !win.isDestroyed()) dialog.showErrorBox('Relay shortcut', error.message);
+        });
+      }
+      return;
+    }
     const key = input.key.toLowerCase();
     let work;
     if (key === 'f11' && !input.control && !input.alt) work = () => win.setFullScreen(!win.isFullScreen());
@@ -536,7 +694,7 @@ function installShortcuts(wc) {
       if (key === 'home') work = () => { goHome(requireTab()); broadcast(); };
     }
     if (input.control && !input.alt) {
-      const commands = input.shift ? { a: 'toggleAgent', o: 'showBookmarks' } : {
+      const commands = input.shift ? { a: 'toggleAgent', o: 'showBookmarks', u: 'showCustomization' } : {
         l: 'focusAddress', h: 'showHistory', j: 'showDownloads', f: 'showFind',
         '=': 'zoomIn', '+': 'zoomIn', '-': 'zoomOut', 0: 'zoomReset'
       };
@@ -592,9 +750,12 @@ async function launch() {
   profile = createProfile(userData);
   profile.data.downloads = profile.data.downloads.map((item) => item.state === 'progressing' ? { ...item, state: 'interrupted' } : item);
   discoveryPath = path.join(userData, 'agent-connection.json');
-  agent = createAgentBridge({ getPreferences: () => ({ ...profile.data.preferences }), updatePreferences, onStatus: broadcast, discoveryPath });
-  if (profile.data.agentEnabled) await agent.start().catch((error) => console.error('Starting agent connection:', error));
-  else await agent.stop().catch((error) => console.error('Cleaning up agent connection:', error));
+  agent = createAgentBridge({
+    getPreferences: () => ({ ...profile.data.preferences }), updatePreferences, onStatus: broadcast, discoveryPath,
+    getBrowserState, listBrowserCommands, runBrowserCommand,
+    getCustomization: () => profile.data.customization, updateCustomization: patchCustomization, resetCustomization
+  });
+  if (!profile.data.agentEnabled) await agent.stop().catch((error) => console.error('Cleaning up agent connection:', error));
   const uiSession = session.fromPartition('relay-ui');
   uiSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   uiSession.setPermissionCheckHandler(() => false);
@@ -659,6 +820,7 @@ async function launch() {
   if (tabs.length) selectTab(previousTab ?? tabs[0]);
   else addTab(profile.data.preferences.homepage);
   await win.loadURL(APP_URL);
+  if (profile.data.agentEnabled) await agent.start().catch((error) => console.error('Starting agent connection:', error));
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();

@@ -2,9 +2,11 @@
   'use strict';
 
   const relay = window.relay;
+  const appearance = window.relayAppearance;
   const get = (id) => document.getElementById(id);
   const address = get('address');
   const page = get('page');
+  const workspaceFrame = get('workspaceFrame');
   const startPage = get('startPage');
   const errorPage = get('errorPage');
   const panel = get('panel');
@@ -22,6 +24,7 @@
     ['showBookmarks', () => showPanel('bookmarks')],
     ['showDownloads', () => showPanel('downloads')],
     ['showMenu', () => showPanel('menu')],
+    ['showCustomization', () => showPanel('customization')],
     ['toggleAgent', () => togglePanel('agent')],
     ['showFind', showFind],
     ['zoomIn', () => changeZoom(0.1)],
@@ -30,6 +33,7 @@
   ]);
   const panels = {
     settings: ['Customize Relay', 'sliders', renderSettings],
+    customization: ['Runtime customization', 'code', renderCustomization],
     agent: ['Agent connection', 'agent', renderAgent],
     bookmarks: ['Bookmarks', 'star', renderBookmarks],
     history: ['History', 'history', renderHistory],
@@ -51,6 +55,9 @@
   let viewportFrame = 0;
   let noticeTimer;
   let findTimer;
+  let appliedCss = '';
+  let appliedNewTabHtml = '';
+  let contributionSnapshot;
 
   const tabStrip = node('div', 'tabs-strip');
   tabStrip.setAttribute('role', 'tablist');
@@ -58,6 +65,17 @@
 
   const addTopTab = iconButton('plus', 'New tab (Ctrl+T)', () => createTab());
   topTabs.append(tabStrip, addTopTab);
+  const customNewTabButtons = node('div', 'custom-controls custom-newtab-controls');
+  customNewTabButtons.setAttribute('aria-label', 'Custom new-tab controls');
+  const controlTargets = {
+    address: get('addressForm'), back: get('backButton'), forward: get('forwardButton'), reload: get('reloadButton'),
+    home: document.querySelector('.home-button'), bookmark: get('bookmarkButton'),
+    extensions: document.querySelector('[data-panel="extensions"]'), downloads: document.querySelector('[data-panel="downloads"]'),
+    menu: document.querySelector('[data-panel="menu"]'), topNewTab: addTopTab, sidebarNewTab: get('addSidebarTab'),
+    newTabShortcuts: get('startShortcuts'), customizeShortcut: get('customizeShortcut'),
+  };
+  const defaultCustomization = { css: '', newTabHtml: '', buttons: [], shortcuts: [], hiddenControls: [] };
+  const runtimeDraft = new Map();
 
   function node(tag, className, text) {
     const element = document.createElement(tag);
@@ -139,6 +157,7 @@
     errorPage.hidden = !active?.error;
     get('errorDescription').textContent = active?.error || '';
     renderTabs(tabChanged);
+    applyCustomization();
     renderBookmarkBar();
     renderPanel();
     scheduleViewport();
@@ -146,6 +165,51 @@
 
   function activeTab() {
     return state?.tabs.find((tab) => tab.id === state.activeTabId);
+  }
+
+  function currentCustomization() {
+    return { ...defaultCustomization, ...state?.customization };
+  }
+
+  function applyCustomization() {
+    const { css, newTabHtml, buttons, hiddenControls } = currentCustomization();
+    if (appliedCss !== css) {
+      appliedCss = css;
+      appearance.applyCss(css);
+    }
+    if (appliedNewTabHtml !== newTabHtml) {
+      appliedNewTabHtml = newTabHtml;
+      const frame = get('customStartFrame');
+      if (newTabHtml.trim()) frame.srcdoc = appearance.buildNewTabDocument(newTabHtml);
+      else frame.removeAttribute('srcdoc');
+    }
+    const hasCustomNewTab = Boolean(newTabHtml.trim());
+    get('defaultStart').hidden = hasCustomNewTab;
+    get('customStart').hidden = !hasCustomNewTab;
+    const footer = get(hasCustomNewTab ? 'customStartActions' : 'defaultStartActions');
+    if (customNewTabButtons.parentElement !== footer) footer.prepend(customNewTabButtons);
+
+    for (const [key, element] of Object.entries(controlTargets)) element.hidden = hiddenControls.includes(key);
+    const snapshot = JSON.stringify(buttons);
+    if (contributionSnapshot !== snapshot) {
+      contributionSnapshot = snapshot;
+      for (const [location, target] of [['toolbar', get('customToolbarButtons')], ['sidebar', get('customSidebarButtons')], ['newTab', customNewTabButtons]]) {
+        const children = renderContributedButtons(location, buttons);
+        target.hidden = children.length === 0;
+        target.replaceChildren(...children);
+      }
+    }
+  }
+
+  function renderContributedButtons(location, buttons = currentCustomization().buttons) {
+    return buttons.filter((button) => button.location === location).map(({ id, label }) => {
+      const invoke = () => run('runCustomCommand', { id });
+      const button = location === 'menu'
+        ? menuEntry(label, 'code', invoke)
+        : textButton(label, invoke, 'secondary-button custom-control');
+      button.dataset.customControl = id;
+      return button;
+    });
   }
 
   function renderTabs(tabChanged) {
@@ -253,7 +317,7 @@
   }
 
   function renderBookmarkBar() {
-    const visible = state.preferences.bookmarksBar;
+    const visible = state.preferences.bookmarksBar && !currentCustomization().hiddenControls.includes('bookmarksBar');
     bookmarkBar.hidden = !visible;
     const snapshot = JSON.stringify(state.bookmarks);
     if (!visible || snapshot === bookmarkSnapshot) return;
@@ -278,9 +342,18 @@
       viewportFrame = 0;
       const active = activeTab();
       const rect = page.getBoundingClientRect();
+      const frame = workspaceFrame.getBoundingClientRect();
+      const pageStyle = getComputedStyle(page);
+      const xScale = rect.width / page.offsetWidth || 1;
+      const yScale = rect.height / page.offsetHeight || 1;
+      const inset = (side) => parseFloat(pageStyle['border' + side + 'Width']) + parseFloat(pageStyle['padding' + side]);
+      const left = Math.max(rect.left + inset('Left') * xScale, frame.left);
+      const top = Math.max(rect.top + inset('Top') * yScale, frame.top);
+      const right = Math.min(rect.right - inset('Right') * xScale, frame.right);
+      const bottom = Math.min(rect.bottom - inset('Bottom') * yScale, frame.bottom);
       const visible = active?.url && !active.error;
-      const bounds = visible
-        ? { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }
+      const bounds = visible && pageStyle.visibility !== 'hidden' && pageStyle.opacity !== '0'
+        ? { x: Math.ceil(left), y: Math.ceil(top), width: Math.max(0, Math.floor(right) - Math.ceil(left)), height: Math.max(0, Math.floor(bottom) - Math.ceil(top)) }
         : { x: 0, y: 0, width: 0, height: 0 };
       const key = JSON.stringify(bounds);
       if (key === lastViewport) return;
@@ -365,6 +438,7 @@
     if (!trigger && !selectedPanel) panelTrigger = document.activeElement;
     selectedPanel = name;
     panel.hidden = false;
+    panelBody.toggleAttribute('data-customizable', name !== 'agent' && name !== 'customization');
     for (const button of document.querySelectorAll('[data-panel]')) {
       button.setAttribute('aria-expanded', String(button.dataset.panel === name));
     }
@@ -402,6 +476,7 @@
     const focused = samePanel && panelBody.contains(document.activeElement) ? document.activeElement : null;
     const focusedName = focused?.getAttribute('name');
     const focusedValue = focused?.type === 'text' ? focused.value : undefined;
+    const caret = focused instanceof HTMLTextAreaElement ? [focused.selectionStart, focused.selectionEnd] : null;
     const scrollTop = samePanel ? panelBody.scrollTop : 0;
     panelSnapshot = snapshot;
 
@@ -416,19 +491,21 @@
         if (focusedName === 'historySearch') input.dispatchEvent(new Event('input'));
       }
       input?.focus({ preventScroll: true });
+      if (caret && input instanceof HTMLTextAreaElement) input.setSelectionRange(...caret);
     }
   }
 
   function panelData() {
     switch (selectedPanel) {
       case 'settings': return [state.preferences, state.version];
-      case 'agent': return state.agent;
+      case 'customization': return currentCustomization();
+      case 'agent': return [state.agent, hasRuntimeCustomization()];
       case 'bookmarks': return state.bookmarks;
       case 'history': return state.history;
       case 'downloads': return state.downloads;
       case 'extensions': return state.extensions;
       case 'tab': return state.tabs.find((tab) => tab.id === contextTabId);
-      case 'menu': return [activeTab()?.zoomFactor, state.fullScreen];
+      case 'menu': return [activeTab()?.zoomFactor, state.fullScreen, currentCustomization().buttons];
       default: return null;
     }
   }
@@ -543,8 +620,102 @@
       section('Tab position', locations),
       section('Appearance', field('Theme', theme), bar),
       section('Navigation', field('Search engine', engine), form),
+      textButton('Runtime customization', () => showPanel('customization'), 'secondary-button', 'code'),
       node('p', 'muted', 'Relay Browser ' + (state.version || '')),
     );
+  }
+
+  function hasRuntimeCustomization() {
+    const configuration = currentCustomization();
+    return Boolean(configuration.css || configuration.newTabHtml || configuration.buttons.length ||
+      configuration.shortcuts.length || configuration.hiddenControls.length);
+  }
+
+  function resetCustomizationButton() {
+    const button = textButton('Restore default interface', async () => {
+      if (await run('resetCustomization', undefined, 'Default interface restored.')) {
+        runtimeDraft.clear();
+        if (selectedPanel === 'customization') {
+          panelSnapshot = undefined;
+          renderPanel();
+        }
+      }
+    });
+    button.disabled = !hasRuntimeCustomization();
+    return button;
+  }
+
+  function editor(name, value, placeholder, rows) {
+    const textarea = node('textarea');
+    textarea.name = name;
+    textarea.value = runtimeDraft.get(name) ?? value;
+    textarea.placeholder = placeholder;
+    textarea.rows = rows;
+    textarea.spellcheck = false;
+    textarea.addEventListener('input', () => {
+      if (textarea.value === value) runtimeDraft.delete(name);
+      else runtimeDraft.set(name, textarea.value);
+    });
+    return textarea;
+  }
+
+  function renderCustomization() {
+    const configuration = currentCustomization();
+    const css = editor('runtimeCss', configuration.css, '.shortcut { border-radius: 20px; }', 4);
+    const html = editor('runtimeHtml', configuration.newTabHtml, '<h1>My workspace</h1>', 4);
+    const { buttons, shortcuts, hiddenControls } = configuration;
+    const commands = editor('runtimeControls', JSON.stringify({ buttons, shortcuts, hiddenControls }, null, 2), '', 6);
+    const form = node('form', 'panel-stack');
+    const submit = node('button', 'primary-button', 'Apply changes');
+    submit.type = 'submit';
+    const actions = group(submit, resetCustomizationButton());
+    actions.classList.add('runtime-actions');
+    const guide = 'https://github.com/Gobbledegookie/agentic-browser/blob/main/docs/customization.md';
+    form.append(
+      section('Appearance',
+        node('p', '', 'Style the tab strips, toolbar, start page, and most panels with CSS.'),
+        field('Browser CSS', css)),
+      section('New tab',
+        node('p', '', 'Replace the start page with offline HTML and CSS. Leave this blank to use Relay’s start page.'),
+        field('New-tab HTML', html)),
+      section('Controls',
+        node('p', '', 'Register buttons and keyboard shortcuts that run browser commands, or hide built-in controls.'),
+        field('Controls JSON', commands),
+        textButton('Read setup guide', () => run('newTab', { input: guide }), 'text-button', 'external')),
+      actions,
+    );
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      let parsed;
+      try {
+        parsed = JSON.parse(commands.value.trim() || '{}');
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object' ||
+          Object.keys(parsed).some((key) => !['buttons', 'shortcuts', 'hiddenControls'].includes(key))) throw new Error();
+      } catch {
+        showNotice('Controls JSON must be an object with buttons, shortcuts, or hiddenControls.', true);
+        commands.focus();
+        return;
+      }
+      const patch = {};
+      if (css.value !== configuration.css) patch.css = css.value;
+      if (html.value !== configuration.newTabHtml) patch.newTabHtml = html.value;
+      for (const key of ['buttons', 'shortcuts', 'hiddenControls']) {
+        const replacement = Object.hasOwn(parsed, key) ? parsed[key] : [];
+        if (JSON.stringify(replacement) !== JSON.stringify(configuration[key])) patch[key] = replacement;
+      }
+      const submitted = [css, html, commands].map((field) => [field.name, field.value]);
+      submit.disabled = true;
+      try {
+        if (!Object.keys(patch).length || await run('customization', patch, 'Interface updated.')) {
+          for (const [name, value] of submitted) {
+            if (runtimeDraft.get(name) === value) runtimeDraft.delete(name);
+          }
+        }
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    return form;
   }
 
   function renderAgent() {
@@ -555,7 +726,7 @@
       () => run('agentEnable', { enabled: !agent.enabled }),
       agent.enabled ? 'secondary-button' : 'primary-button', 'key');
     const content = stack(section('Local access', status,
-      node('p', '', 'Let your agent change Relay’s appearance and navigation preferences.'), group(toggle)));
+      node('p', '', 'An enabled connection lets your agent control this browser, change its interface, and read visible webpage text, open tabs, history, bookmarks, downloads, and extensions.'), group(toggle)));
 
     if (agent.enabled) {
       const example = '“Move my tabs to the left and turn on the bookmarks bar.”';
@@ -578,6 +749,10 @@
         ),
       ));
     }
+    content.append(section('Browser interface', group(
+      textButton('Runtime customization', () => showPanel('customization'), 'secondary-button', 'code'),
+      resetCustomizationButton(),
+    )));
     return content;
   }
 
@@ -722,6 +897,8 @@
         menuEntry('Find in page', 'search', () => { closePanel(false); showFind(); }, 'Ctrl+F'),
         menuEntry(state.fullScreen ? 'Exit full screen' : 'Full screen', 'screen', () => run('fullScreen'), 'F11'),
         menuEntry('Customize Relay', 'sliders', () => showPanel('settings')),
+      menuEntry('Runtime customization', 'code', () => showPanel('customization')),
+      ...renderContributedButtons('menu'),
       ]),
       section('Page size', zoom),
     );
@@ -792,6 +969,7 @@
   if (relay) {
     const resize = new ResizeObserver(scheduleViewport);
     resize.observe(page);
+    resize.observe(workspaceFrame);
     window.addEventListener('resize', scheduleViewport);
     let receivedState = false;
     relay.onState((update) => {
@@ -799,6 +977,10 @@
       applyState(update);
     });
     relay.onCommand((command) => shortcuts.get(command)?.());
+    relay.onPanel?.((name) => {
+      if (name === 'close') closePanel();
+      else showPanel(name);
+    });
     relay.onFind(({ activeMatchOrdinal, matches, finalUpdate }) => {
       if (findBar.hidden || !findQuery.value) return;
       if (matches > 0) findCount.textContent = activeMatchOrdinal + ' of ' + matches;

@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src about:; base-uri 'none'; form-action 'none'">
   <title>Relay Browser</title>
   <link rel="stylesheet" href="./styles.css">
+  <script defer src="./customization.js"></script>
   <script defer src="./app.js"></script>
 </head>
 <body data-tab-position="top" data-theme="dark">
@@ -53,101 +54,120 @@
   </svg>
 
   <header id="titlebar" class="titlebar">
-    <div class="brand" aria-label="Relay Browser">
-      <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-mark"></use></svg></span>
-      <span class="brand-name">RELAY</span>
+    <div class="titlebar-backdrop-frame" aria-hidden="true"><div id="titlebarBackdrop"></div></div>
+    <div class="brand-frame">
+      <div id="brand" class="brand" aria-label="Relay Browser">
+        <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-mark"></use></svg></span>
+        <span class="brand-name">RELAY</span>
+      </div>
     </div>
-    <div id="topTabs" class="top-tabs"></div>
+    <div class="top-tabs-frame"><div id="topTabs" class="top-tabs"></div></div>
     <div class="drag-space"></div>
-    <button id="agentButton" class="icon-button agent-button" type="button" data-panel="agent" aria-label="Agent connection" title="Agent connection" aria-expanded="false">
-      <svg class="icon" aria-hidden="true"><use href="#i-agent"></use></svg><span id="agentDot" class="agent-dot" hidden></span>
-    </button>
-    <div class="window-controls" aria-label="Window controls">
-      <button class="window-button" type="button" data-window="minimize" aria-label="Minimize" title="Minimize"><svg class="icon" aria-hidden="true"><use href="#i-minimize"></use></svg></button>
-      <button id="maximize" class="window-button" type="button" data-window="maximize" aria-label="Maximize" title="Maximize"><svg class="icon" aria-hidden="true"><use href="#i-maximize"></use></svg></button>
-      <button class="window-button window-close" type="button" data-window="close" aria-label="Close window" title="Close window"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button>
+    <div class="caption-area">
+      <button id="agentButton" class="icon-button agent-button" type="button" data-panel="agent" aria-label="Agent connection" title="Agent connection" aria-expanded="false">
+        <svg class="icon" aria-hidden="true"><use href="#i-agent"></use></svg><span id="agentDot" class="agent-dot" hidden></span>
+      </button>
+      <div class="window-controls" aria-label="Window controls">
+        <button class="window-button" type="button" data-window="minimize" aria-label="Minimize" title="Minimize"><svg class="icon" aria-hidden="true"><use href="#i-minimize"></use></svg></button>
+        <button id="maximize" class="window-button" type="button" data-window="maximize" aria-label="Maximize" title="Maximize"><svg class="icon" aria-hidden="true"><use href="#i-maximize"></use></svg></button>
+        <button class="window-button window-close" type="button" data-window="close" aria-label="Close window" title="Close window"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button>
+      </div>
     </div>
   </header>
 
-  <div id="toolbar" class="toolbar" role="toolbar" aria-label="Browser navigation">
-    <div class="navigation-buttons">
-      <button id="backButton" class="icon-button" type="button" data-action="back" aria-label="Back" title="Back (Alt+Left)"><svg class="icon" aria-hidden="true"><use href="#i-back"></use></svg></button>
-      <button id="forwardButton" class="icon-button" type="button" data-action="forward" aria-label="Forward" title="Forward (Alt+Right)"><svg class="icon" aria-hidden="true"><use href="#i-forward"></use></svg></button>
-      <button id="reloadButton" class="icon-button" type="button" data-action="reload" aria-label="Reload" title="Reload (Ctrl+R)"><svg class="icon" aria-hidden="true"><use href="#i-reload"></use></svg></button>
-      <button class="icon-button home-button" type="button" data-action="home" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg></button>
-    </div>
-    <form id="addressForm" class="address-form">
-      <svg id="siteIcon" class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
-      <input id="address" type="text" autocomplete="off" spellcheck="false" aria-label="Address and search bar" placeholder="Search or enter an address">
-      <button id="bookmarkButton" class="icon-button bookmark-toggle" type="button" data-action="bookmarkToggle" aria-label="Bookmark this page" title="Bookmark this page (Ctrl+D)" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-star"></use></svg></button>
-    </form>
-    <div class="toolbar-actions">
-      <button class="icon-button" type="button" data-panel="extensions" aria-label="Extensions" title="Extensions" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-extensions"></use></svg></button>
-      <button class="icon-button downloads-button" type="button" data-panel="downloads" aria-label="Downloads" title="Downloads (Ctrl+J)" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg></button>
-      <button class="icon-button" type="button" data-panel="menu" aria-label="Browser menu" title="Browser menu" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-menu"></use></svg></button>
+  <div class="toolbar-frame">
+    <div id="toolbar" class="toolbar" role="toolbar" aria-label="Browser navigation">
+      <div class="navigation-buttons">
+        <button id="backButton" class="icon-button" type="button" data-action="back" aria-label="Back" title="Back (Alt+Left)"><svg class="icon" aria-hidden="true"><use href="#i-back"></use></svg></button>
+        <button id="forwardButton" class="icon-button" type="button" data-action="forward" aria-label="Forward" title="Forward (Alt+Right)"><svg class="icon" aria-hidden="true"><use href="#i-forward"></use></svg></button>
+        <button id="reloadButton" class="icon-button" type="button" data-action="reload" aria-label="Reload" title="Reload (Ctrl+R)"><svg class="icon" aria-hidden="true"><use href="#i-reload"></use></svg></button>
+        <button class="icon-button home-button" type="button" data-action="home" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg></button>
+      </div>
+      <form id="addressForm" class="address-form">
+        <svg id="siteIcon" class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+        <input id="address" type="text" autocomplete="off" spellcheck="false" aria-label="Address and search bar" placeholder="Search or enter an address">
+        <button id="bookmarkButton" class="icon-button bookmark-toggle" type="button" data-action="bookmarkToggle" aria-label="Bookmark this page" title="Bookmark this page (Ctrl+D)" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-star"></use></svg></button>
+      </form>
+      <div id="customToolbarButtons" class="custom-controls custom-toolbar-controls" aria-label="Custom toolbar controls" hidden></div>
+      <div class="toolbar-actions">
+        <button class="icon-button" type="button" data-panel="extensions" aria-label="Extensions" title="Extensions" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-extensions"></use></svg></button>
+        <button class="icon-button downloads-button" type="button" data-panel="downloads" aria-label="Downloads" title="Downloads (Ctrl+J)" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg></button>
+        <button class="icon-button" type="button" data-panel="menu" aria-label="Browser menu" title="Browser menu" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-menu"></use></svg></button>
+      </div>
     </div>
   </div>
 
-  <div id="bookmarkBar" class="bookmarks-bar" aria-label="Bookmarks bar" hidden></div>
-  <form id="findBar" class="find-bar" role="search" hidden>
-    <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
-    <input id="findQuery" autocomplete="off" spellcheck="false" aria-label="Find in page" placeholder="Find in page">
-    <output id="findCount" for="findQuery" aria-live="polite"></output>
-    <button class="icon-button" type="button" data-find="previous" aria-label="Previous match" title="Previous match"><svg class="icon" aria-hidden="true"><use href="#i-up"></use></svg></button>
-    <button class="icon-button" type="submit" aria-label="Next match" title="Next match"><svg class="icon" aria-hidden="true"><use href="#i-down"></use></svg></button>
-    <button class="icon-button" type="button" data-find="close" aria-label="Close find bar" title="Close find bar"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button>
-  </form>
+  <div class="utility-frame">
+    <div id="bookmarkBar" class="bookmarks-bar" aria-label="Bookmarks bar" hidden></div>
+    <form id="findBar" class="find-bar" role="search" hidden>
+      <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input id="findQuery" autocomplete="off" spellcheck="false" aria-label="Find in page" placeholder="Find in page">
+      <output id="findCount" for="findQuery" aria-live="polite"></output>
+      <button class="icon-button" type="button" data-find="previous" aria-label="Previous match" title="Previous match"><svg class="icon" aria-hidden="true"><use href="#i-up"></use></svg></button>
+      <button class="icon-button" type="submit" aria-label="Next match" title="Next match"><svg class="icon" aria-hidden="true"><use href="#i-down"></use></svg></button>
+      <button class="icon-button" type="button" data-find="close" aria-label="Close find bar" title="Close find bar"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button>
+    </form>
+  </div>
   <p id="notice" class="notice" role="status" hidden></p>
 
   <div id="workspace" class="workspace">
-    <aside id="sideTabs" class="side-tabs" aria-label="Tabs" hidden>
-      <div class="side-tabs-heading"><span>Tabs</span><button class="icon-button" type="button" data-action="newTab" aria-label="New tab" title="New tab (Ctrl+T)"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg></button></div>
-    </aside>
+    <div id="workspaceFrame" class="workspace-frame">
+      <aside id="sideTabs" class="side-tabs" aria-label="Tabs" hidden>
+        <div class="side-tabs-heading"><span>Tabs</span><button id="addSidebarTab" class="icon-button" type="button" data-action="newTab" aria-label="New tab" title="New tab (Ctrl+T)"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg></button></div>
+        <div id="customSidebarButtons" class="custom-controls custom-sidebar-controls" aria-label="Custom sidebar controls" hidden></div>
+      </aside>
 
-    <main id="page" class="page">
-      <section id="startPage" class="start-page" aria-labelledby="startHeading">
-        <div class="start-content">
-          <div class="hero">
-            <div class="hero-content">
-              <span class="hero-mark" aria-hidden="true"><svg class="icon"><use href="#i-mark"></use></svg></span>
-              <h1 id="startHeading">Where to?</h1>
-              <form id="startForm" class="start-form" role="search">
-                <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
-                <input id="startSearch" type="text" aria-label="Search the web or enter a URL" placeholder="Search the web or enter a URL" autocomplete="off" spellcheck="false">
-                <button type="submit" aria-label="Go" title="Go"><svg class="icon" aria-hidden="true"><use href="#i-return"></use></svg></button>
-              </form>
+      <main id="page" class="page">
+        <section id="startPage" class="start-page" aria-label="New tab">
+          <div id="defaultStart" class="start-content">
+            <div class="hero">
+              <div class="hero-content">
+                <span class="hero-mark" aria-hidden="true"><svg class="icon"><use href="#i-mark"></use></svg></span>
+                <h1 id="startHeading">Where to?</h1>
+                <form id="startForm" class="start-form" role="search">
+                  <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+                  <input id="startSearch" type="text" aria-label="Search the web or enter a URL" placeholder="Search the web or enter a URL" autocomplete="off" spellcheck="false">
+                  <button type="submit" aria-label="Go" title="Go"><svg class="icon" aria-hidden="true"><use href="#i-return"></use></svg></button>
+                </form>
+              </div>
+            </div>
+            <section id="startShortcuts" class="shortcuts" aria-labelledby="shortcutsHeading">
+              <h2 id="shortcutsHeading">Shortcuts</h2>
+              <div class="shortcut-grid">
+                <button class="shortcut" type="button" data-url="https://chromewebstore.google.com/">
+                  <span class="shortcut-icon mint"><svg class="icon" aria-hidden="true"><use href="#i-store"></use></svg></span><span>Chrome Web Store</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
+                </button>
+                <button class="shortcut" type="button" data-url="https://github.com/">
+                  <span class="shortcut-icon lilac"><svg class="icon" aria-hidden="true"><use href="#i-code"></use></svg></span><span>GitHub</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
+                </button>
+                <button class="shortcut" type="button" data-url="https://www.wikipedia.org/">
+                  <span class="shortcut-icon sand"><svg class="icon" aria-hidden="true"><use href="#i-book"></use></svg></span><span>Wikipedia</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
+                </button>
+                <button class="shortcut" type="button" data-panel="agent" aria-expanded="false">
+                  <span class="shortcut-icon agent"><svg class="icon" aria-hidden="true"><use href="#i-agent"></use></svg></span><span>Agent connection</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
+                </button>
+              </div>
+            </section>
+            <div id="defaultStartActions" class="start-actions">
+              <button id="customizeShortcut" class="text-button" type="button" data-panel="settings" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-sliders"></use></svg>Customize Relay</button>
             </div>
           </div>
-          <section class="shortcuts" aria-labelledby="shortcutsHeading">
-            <h2 id="shortcutsHeading">Shortcuts</h2>
-            <div class="shortcut-grid">
-              <button class="shortcut" type="button" data-url="https://chromewebstore.google.com/">
-                <span class="shortcut-icon mint"><svg class="icon" aria-hidden="true"><use href="#i-store"></use></svg></span><span>Chrome Web Store</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
-              </button>
-              <button class="shortcut" type="button" data-url="https://github.com/">
-                <span class="shortcut-icon lilac"><svg class="icon" aria-hidden="true"><use href="#i-code"></use></svg></span><span>GitHub</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
-              </button>
-              <button class="shortcut" type="button" data-url="https://www.wikipedia.org/">
-                <span class="shortcut-icon sand"><svg class="icon" aria-hidden="true"><use href="#i-book"></use></svg></span><span>Wikipedia</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
-              </button>
-              <button class="shortcut" type="button" data-panel="agent" aria-expanded="false">
-                <span class="shortcut-icon agent"><svg class="icon" aria-hidden="true"><use href="#i-agent"></use></svg></span><span>Agent connection</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
-              </button>
+          <div id="customStart" class="custom-start" hidden>
+            <iframe id="customStartFrame" sandbox title="Custom new-tab content" referrerpolicy="no-referrer"></iframe>
+            <div id="customStartActions" class="start-actions">
+              <button class="text-button" type="button" data-panel="customization" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-code"></use></svg>Edit new tab</button>
             </div>
-          </section>
-          <div class="start-actions">
-            <button class="text-button" type="button" data-panel="settings" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-sliders"></use></svg>Customize Relay</button>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <section id="errorPage" class="error-page" aria-labelledby="errorHeading" hidden>
-        <span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-globe"></use></svg></span>
-        <h1 id="errorHeading">This page couldn’t load</h1>
-        <p id="errorDescription"></p>
-        <button class="primary-button" type="button" data-action="reload"><svg class="icon" aria-hidden="true"><use href="#i-reload"></use></svg>Try again</button>
-      </section>
-    </main>
+        <section id="errorPage" class="error-page" aria-labelledby="errorHeading" hidden>
+          <span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-globe"></use></svg></span>
+          <h1 id="errorHeading">This page couldn’t load</h1>
+          <p id="errorDescription"></p>
+          <button class="primary-button" type="button" data-action="reload"><svg class="icon" aria-hidden="true"><use href="#i-reload"></use></svg>Try again</button>
+        </section>
+      </main>
+    </div>
 
     <aside id="panel" class="panel" aria-labelledby="panelHeading" hidden>
       <header class="panel-header">
@@ -155,7 +175,7 @@
         <h2 id="panelHeading"></h2>
         <button class="icon-button panel-close" type="button" data-panel-close aria-label="Close panel" title="Close panel"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button>
       </header>
-      <div id="panelBody" class="panel-body"></div>
+      <div class="panel-body-frame"><div id="panelBody" class="panel-body"></div></div>
     </aside>
   </div>
 </body>
