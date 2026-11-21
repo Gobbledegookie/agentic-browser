@@ -41,6 +41,7 @@ function createProfile(dataPath) {
     customization,
     agentAccessVersion: AGENT_ACCESS_VERSION,
     agentEnabled: saved.agentEnabled === true && saved.agentAccessVersion === AGENT_ACCESS_VERSION,
+    approvedProviders: Array.isArray(saved.approvedProviders) ? [...new Set(saved.approvedProviders.filter((id) => id === 'chatgpt' || id === 'claude'))] : [],
     bookmarks: records(saved.bookmarks, 1000),
     history: records(saved.history, MAX_HISTORY),
     downloads: Array.isArray(saved.downloads) ? saved.downloads.filter((item) => item && typeof item.id === 'string').slice(0, 100) : [],

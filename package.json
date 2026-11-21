@@ -1,7 +1,7 @@
 {
   "name": "relay-browser",
   "productName": "Relay Browser",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A Chromium browser with a live connection to your choice of agent",
   "author": "Relay Browser contributors",
   "license": "MIT",

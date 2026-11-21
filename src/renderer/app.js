@@ -58,6 +58,7 @@
   let appliedCss = '';
   let appliedNewTabHtml = '';
   let contributionSnapshot;
+  let agentAdvancedOpen = false;
 
   const tabStrip = node('div', 'tabs-strip');
   tabStrip.setAttribute('role', 'tablist');
@@ -122,7 +123,7 @@
     const active = activeTab();
     document.body.dataset.tabPosition = state.preferences.tabPosition;
     document.body.dataset.theme = state.preferences.theme;
-    get('agentDot').hidden = !state.agent.enabled;
+    get('agentDot').hidden = !state.agent.enabled && !hasConnectedProvider();
 
     const maximize = get('maximize');
     maximize.title = state.maximized ? 'Restore' : 'Maximize';
@@ -436,6 +437,7 @@
     if (!panels[name] || !state) return;
     if (trigger && !panel.contains(trigger)) panelTrigger = trigger;
     if (!trigger && !selectedPanel) panelTrigger = document.activeElement;
+    if (name === 'agent' && selectedPanel !== 'agent') agentAdvancedOpen = false;
     selectedPanel = name;
     panel.hidden = false;
     panelBody.toggleAttribute('data-customizable', name !== 'agent' && name !== 'customization');
@@ -475,6 +477,7 @@
     const samePanel = get('panelHeading').textContent === title;
     const focused = samePanel && panelBody.contains(document.activeElement) ? document.activeElement : null;
     const focusedName = focused?.getAttribute('name');
+    const focusedProvider = focused?.closest('[data-provider]')?.dataset.provider;
     const focusedValue = focused?.type === 'text' ? focused.value : undefined;
     const caret = focused instanceof HTMLTextAreaElement ? [focused.selectionStart, focused.selectionEnd] : null;
     const scrollTop = samePanel ? panelBody.scrollTop : 0;
@@ -490,7 +493,9 @@
         input.value = focusedValue;
         if (focusedName === 'historySearch') input.dispatchEvent(new Event('input'));
       }
-      input?.focus({ preventScroll: true });
+      const providerCard = focusedProvider && panelBody.querySelector('[data-provider="' + CSS.escape(focusedProvider) + '"]');
+      const focusTarget = input || providerCard?.querySelector('button:not([disabled])') || providerCard;
+      focusTarget?.focus({ preventScroll: true });
       if (caret && input instanceof HTMLTextAreaElement) input.setSelectionRange(...caret);
     }
   }
@@ -499,7 +504,7 @@
     switch (selectedPanel) {
       case 'settings': return [state.preferences, state.version];
       case 'customization': return currentCustomization();
-      case 'agent': return [state.agent, hasRuntimeCustomization()];
+      case 'agent': return [state.agent, state.providers, hasRuntimeCustomization()];
       case 'bookmarks': return state.bookmarks;
       case 'history': return state.history;
       case 'downloads': return state.downloads;
@@ -719,14 +724,117 @@
   }
 
   function renderAgent() {
+    const providers = node('div', 'provider-list');
+    providers.append(
+      renderProvider('chatgpt', 'ChatGPT', 'Codex', 'agent'),
+      renderProvider('claude', 'Claude', 'Claude Code', 'code'),
+    );
+    const permissions = node('p', 'provider-permissions',
+      'Connected agents can control Relay and read visible webpage text, tabs, history, bookmarks, downloads, and extensions.');
+    const content = stack(permissions, providers);
+    if (hasConnectedProvider()) {
+      content.append(node('p', 'provider-example', 'Try asking “Move my tabs to the left.”'));
+    }
+    const advanced = node('details', 'agent-advanced');
+    advanced.open = agentAdvancedOpen;
+    const summary = node('summary', 'agent-advanced-summary');
+    summary.append(icon('sliders'), node('span', '', 'Advanced settings'), icon('down'));
+    advanced.append(summary, renderAdvancedAgent());
+    advanced.addEventListener('toggle', () => {
+      if (advanced.isConnected) agentAdvancedOpen = advanced.open;
+    });
+    content.append(advanced);
+    return content;
+  }
+
+  function hasConnectedProvider() {
+    return Object.values(state.providers || {}).some((provider) => provider.status === 'connected');
+  }
+
+  function renderProvider(id, name, product, iconName) {
+    const labels = {
+      checking: 'Checking', available: 'Ready', missing: 'Not installed',
+      connecting: 'Signing in', connected: 'Connected', error: 'Needs attention',
+    };
+    const provider = state.providers?.[id];
+    const status = Object.hasOwn(labels, provider?.status) ? provider.status : 'checking';
+    const card = node('section', 'provider-card');
+    card.dataset.provider = id;
+    card.dataset.status = status;
+    card.setAttribute('aria-labelledby', id + 'ProviderName');
+    card.tabIndex = -1;
+
+    const header = node('div', 'provider-card-header');
+    const mark = node('span', 'provider-mark ' + id);
+    mark.append(icon(iconName));
+    const nameBlock = node('div', 'provider-name');
+    const heading = node('h3', '', name);
+    heading.id = id + 'ProviderName';
+    nameBlock.append(heading, node('span', '', 'via ' + product));
+    const badge = node('span', 'provider-badge', labels[status]);
+    badge.setAttribute('role', 'status');
+    header.append(mark, nameBlock, badge);
+    card.append(header);
+
+    const controls = group();
+    const button = (action, label, variant, buttonIcon) => {
+      const control = textButton(label, async () => {
+        control.disabled = true;
+        try {
+          await run(action, action === 'refreshProviders' ? undefined : { id });
+        } finally {
+          control.disabled = false;
+        }
+      }, variant, buttonIcon);
+      control.name = id + '-' + action;
+      controls.append(control);
+    };
+
+    switch (status) {
+      case 'available':
+        button('connectProvider', 'Connect', 'primary-button');
+        break;
+      case 'connected':
+        button('openProvider', 'Open ' + name, 'primary-button', 'external');
+        button('disconnectProvider', 'Disconnect');
+        break;
+      case 'missing':
+        button('installProvider', 'Install', 'primary-button', 'external');
+        button('refreshProviders', 'Check again');
+        break;
+      case 'connecting':
+        card.append(node('p', 'provider-message', 'Complete any sign-in prompts, then return to Relay.'));
+        button('cancelProvider', 'Cancel');
+        break;
+      case 'error': {
+        const message = typeof provider.message === 'string' && provider.message.trim()
+          ? provider.message.trim().slice(0, 400)
+          : 'Relay couldn’t connect to ' + name + '.';
+        card.append(node('p', 'item-error provider-message', message));
+        button('connectProvider', 'Try again', 'primary-button');
+        button('refreshProviders', 'Check again');
+        break;
+      }
+    }
+    if (controls.childElementCount) card.append(controls);
+    return card;
+  }
+
+  function renderAdvancedAgent() {
     const agent = state.agent;
     const status = node('div', 'connection-status' + (agent.enabled ? ' enabled' : ''),
       agent.enabled ? 'Agent bridge enabled' : 'Agent bridge disabled');
     const toggle = textButton(agent.enabled ? 'Disable bridge' : 'Enable bridge',
       () => run('agentEnable', { enabled: !agent.enabled }),
       agent.enabled ? 'secondary-button' : 'primary-button', 'key');
-    const content = stack(section('Local access', status,
-      node('p', '', 'An enabled connection lets your agent control this browser, change its interface, and read visible webpage text, open tabs, history, bookmarks, downloads, and extensions.'), group(toggle)));
+    const content = stack(
+      section('Browser interface', group(
+        textButton('Runtime customization', () => showPanel('customization'), 'secondary-button', 'code'),
+        resetCustomizationButton(),
+      )),
+      section('Manual connection', status, group(toggle)),
+    );
+    content.classList.add('agent-advanced-content');
 
     if (agent.enabled) {
       const example = '“Move my tabs to the left and turn on the bookmarks bar.”';
@@ -749,10 +857,6 @@
         ),
       ));
     }
-    content.append(section('Browser interface', group(
-      textButton('Runtime customization', () => showPanel('customization'), 'secondary-button', 'code'),
-      resetCustomizationButton(),
-    )));
     return content;
   }
 

@@ -4,13 +4,17 @@ const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { mkdir, rename, rm, writeFile } = require('node:fs/promises');
 const { createServer } = require('node:http');
 const { dirname } = require('node:path');
+const { createMcpResponder, rpcError } = require('./mcp.cjs');
 const { isObject, publicPreferences, validatePreferencesPatch } = require('./preferences.cjs');
 
 const HOST = '127.0.0.1';
 const PREFERENCES_PATH = '/v1/preferences';
 const BROWSER_PATH = '/v1/browser';
+const PROVIDER_PATH = '/mcp';
 const MAX_PREFERENCES_BYTES = 8192;
 const MAX_BROWSER_BODY_BYTES = 256 * 1024;
+const MAX_MCP_BODY_BYTES = MAX_BROWSER_BODY_BYTES + 8192;
+const SERVER_OPTIONS = { headersTimeout: 5000, requestTimeout: 5000, connectionsCheckingInterval: 1000 };
 
 function respond(response, status, value) {
   const body = JSON.stringify(value);
@@ -28,17 +32,25 @@ function isAuthorized(value, expected) {
   return timingSafeEqual(Buffer.from(value), Buffer.from(expected));
 }
 
-async function readJson(request, response, limit) {
+function isDirectClient(request, server) {
+  const address = server?.address();
+  return address && request.headers.host === `${HOST}:${address.port}` &&
+    request.headers.origin === undefined && request.headers['sec-fetch-site'] === undefined;
+}
+
+async function readJson(request, response, limit, formatError = message => ({ error: message })) {
+  const fail = (status, message, code = -32600) => {
+    respond(response, status, formatError(message, code));
+    return null;
+  };
   const mediaType = request.headers['content-type']?.split(';', 1)[0].trim().toLowerCase();
   if (mediaType !== 'application/json') {
     response.setHeader('Connection', 'close');
-    respond(response, 415, { error: 'Send application/json.' });
-    return null;
+    return fail(415, 'Send application/json.');
   }
   if (Number(request.headers['content-length']) > limit) {
     response.setHeader('Connection', 'close');
-    respond(response, 413, { error: 'Request body is too large.' });
-    return null;
+    return fail(413, 'Request body is too large.');
   }
 
   let size = 0;
@@ -47,8 +59,7 @@ async function readJson(request, response, limit) {
     size += chunk.length;
     if (size > limit) {
       response.setHeader('Connection', 'close');
-      respond(response, 413, { error: 'Request body is too large.' });
-      return null;
+      return fail(413, 'Request body is too large.');
     }
     chunks.push(chunk);
   }
@@ -57,13 +68,11 @@ async function readJson(request, response, limit) {
   try {
     payload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
   } catch {
-    respond(response, 400, { error: 'Invalid JSON.' });
-    return null;
+    return fail(400, 'Invalid JSON.', -32700);
   }
 
   if (!isObject(payload)) {
-    respond(response, 400, { error: 'Request body must be a JSON object.' });
-    return null;
+    return fail(400, 'Request body must be a JSON object.');
   }
   return payload;
 }
@@ -95,12 +104,26 @@ function closeServer(server) {
   });
 }
 
+function listen(server) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, HOST, () => {
+      server.removeListener('error', reject);
+      resolve();
+    });
+  });
+}
+
 function createAgentBridge({
   getPreferences, updatePreferences, getBrowserState, listBrowserCommands, runBrowserCommand,
   getCustomization, updateCustomization, resetCustomization, onStatus = () => {}, discoveryPath
 }) {
   let connection = null;
   let transition = Promise.resolve();
+  let providerServer = null;
+  let stopped = false;
+  const providerGrants = new Map();
+  const handleMcpMessage = createMcpResponder({ http: true });
 
   const routes = new Map();
 
@@ -158,13 +181,13 @@ function createAgentBridge({
 
   function start() {
     return serialize(async () => {
+      if (stopped) throw new Error('The agent bridge has stopped.');
       if (connection) return status();
 
       const token = randomBytes(32).toString('base64url');
       const authorization = `Bearer ${token}`;
-      const server = createServer({ headersTimeout: 5000, requestTimeout: 5000, connectionsCheckingInterval: 1000 }, async (request, response) => {
-        if (request.headers.host !== `${HOST}:${server.address()?.port}` ||
-            request.headers.origin !== undefined || request.headers['sec-fetch-site'] !== undefined) {
+      const server = createServer(SERVER_OPTIONS, async (request, response) => {
+        if (!isDirectClient(request, server)) {
           respond(response, 403, { error: 'Only direct local clients are allowed.' });
           return;
         }
@@ -202,13 +225,7 @@ function createAgentBridge({
         }
       });
 
-      await new Promise((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(0, HOST, () => {
-          server.removeListener('error', reject);
-          resolve();
-        });
-      });
+      await listen(server);
       const endpoint = `http://${HOST}:${server.address().port}${PREFERENCES_PATH}`;
       try {
         if (discoveryPath) await writeDiscoveryFile(discoveryPath, { endpoint, token });
@@ -222,21 +239,117 @@ function createAgentBridge({
     });
   }
 
-  function stop() {
-    return serialize(async () => {
-      const previous = connection;
-      connection = null;
-      if (previous) await closeServer(previous.server);
-      try {
-        if (discoveryPath) await rm(discoveryPath, { force: true });
-      } finally {
-        if (previous) onStatus(status());
+  async function stopManual() {
+    const previous = connection;
+    connection = null;
+    if (previous) await closeServer(previous.server);
+    try {
+      if (discoveryPath) await rm(discoveryPath, { force: true });
+    } finally {
+      if (previous) onStatus(status());
+    }
+    return status();
+  }
+
+  async function handleProviderRequest(request, response) {
+    if (!isDirectClient(request, providerServer)) {
+      respond(response, 403, { error: 'Only direct local clients are allowed.' });
+      return;
+    }
+    const grant = [...providerGrants.values()].find(({ authorization }) => isAuthorized(request.headers.authorization, authorization));
+    if (!grant) {
+      respond(response, 401, { error: 'A valid provider bearer token is required.' });
+      return;
+    }
+    if (request.url !== PROVIDER_PATH) {
+      respond(response, 404, { error: 'Unknown endpoint.' });
+      return;
+    }
+    if (request.method !== 'POST') {
+      response.setHeader('Allow', 'POST');
+      respond(response, 405, { error: 'Method not allowed.' });
+      return;
+    }
+    const accept = (request.headers.accept || '').toLowerCase().split(',').map(item => item.split(';', 1)[0].trim());
+    if (!accept.includes('application/json') || !accept.includes('text/event-stream')) {
+      respond(response, 406, rpcError(null, -32600, 'The MCP client must accept JSON and event streams.'));
+      return;
+    }
+
+    grant.responses.add(response);
+    response.once('close', () => grant.responses.delete(response));
+    try {
+      const message = await readJson(request, response, MAX_MCP_BODY_BYTES, (error, code) => rpcError(null, code, error));
+      if (!message || response.destroyed) return;
+      const reply = await handleMcpMessage(message, request.headers, async ({ method, path }, payload) => {
+        if (response.destroyed) throw new Error('The provider request was disconnected.');
+        const route = routes.get(path)?.get(method);
+        if (!route) throw new Error('This command is unavailable in Relay.');
+        if (route.limit && Buffer.byteLength(JSON.stringify(payload)) > route.limit) throw new TypeError('Request body is too large.');
+        try {
+          return await route.handler(payload);
+        } catch (error) {
+          if (error instanceof TypeError || error instanceof RangeError) throw error;
+          throw new Error('Relay could not complete the request.');
+        }
+      });
+      if (response.destroyed) return;
+      if (!reply) {
+        response.writeHead(202, { 'Cache-Control': 'no-store' }).end();
+        return;
       }
-      return status();
+      const code = reply.error?.code;
+      respond(response, code === -32601 ? 404 : code ? 400 : 200, reply);
+    } catch {
+      if (!response.destroyed) respond(response, 500, rpcError(null, -32603, 'Relay could not complete the request.'));
+    }
+  }
+
+  function grantProvider(id) {
+    return serialize(async () => {
+      if (stopped) throw new Error('The agent bridge has stopped.');
+      if (typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(id)) throw new TypeError('Unknown provider ID.');
+      const existing = providerGrants.get(id);
+      if (existing) return { url: existing.url, token: existing.token };
+      if (!providerServer) {
+        const server = createServer(SERVER_OPTIONS, handleProviderRequest);
+        await listen(server);
+        providerServer = server;
+      }
+      const token = randomBytes(32).toString('base64url');
+      const url = `http://${HOST}:${providerServer.address().port}${PROVIDER_PATH}`;
+      providerGrants.set(id, { url, token, authorization: `Bearer ${token}`, responses: new Set() });
+      return { url, token };
     });
   }
 
-  return { start, status, stop };
+  async function closeProviderServer() {
+    const server = providerServer;
+    providerServer = null;
+    if (server) await closeServer(server);
+  }
+
+  function revokeProvider(id) {
+    return serialize(async () => {
+      const previous = providerGrants.get(id);
+      if (!previous) return;
+      providerGrants.delete(id);
+      for (const response of previous.responses) response.destroy();
+      if (!providerGrants.size) await closeProviderServer();
+    });
+  }
+
+  function shutdown() {
+    return serialize(async () => {
+      stopped = true;
+      providerGrants.clear();
+      const results = await Promise.allSettled([stopManual(), closeProviderServer()]);
+      const failure = results.find(result => result.status === 'rejected');
+      if (failure) throw failure.reason;
+    });
+  }
+
+  return { start, status, stop: () => serialize(stopManual), grantProvider, revokeProvider, shutdown };
 }
 
 module.exports = { createAgentBridge };

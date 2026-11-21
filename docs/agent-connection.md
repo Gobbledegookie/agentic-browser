@@ -1,10 +1,19 @@
-# Connect an agent to Relay Browser
+# Connect ChatGPT or Claude to Relay Browser
 
-Open the **Agent** button beside the window controls and enable the local connection. If you upgraded from Relay 0.1, enable it again to grant the expanded access in 0.2. Connect an MCP client running on the same Windows account using Relay’s bundled stdio server. Install Node.js 22.12 or later and make `node.exe` available on your `PATH`. [Node.js downloads](https://nodejs.org/en/download)
+1. Open **Agent** beside the Windows controls and choose **ChatGPT** or **Claude**.
+2. If Relay shows **Install**, install the provider’s Windows agent and click **Check again**. ChatGPT uses Codex. Claude uses Claude Code.
+3. Click **Connect**. Complete sign-in in the provider’s own window if prompted.
+4. Click **Open ChatGPT** or **Open Claude**. Ask the agent to “Move my tabs to the left” or “Turn on the bookmarks bar.”
+
+Relay opens a new session in the provider’s official agent and configures browser access for that session. **Disconnect** revokes Relay access for that provider. Your account sign-in stays with the provider. Reopen the agent from Relay after restarting the browser to start a fresh connected session. [Codex sign-in](https://learn.chatgpt.com/docs/auth?surface=cli) · [Claude Code sign-in](https://code.claude.com/docs/en/authentication)
+
+## Advanced manual connection
+
+For another MCP client, open **Agent → Advanced settings → Enable bridge** and connect on the same Windows account using Relay’s bundled stdio server. Install Node.js 22.12 or later and make `node.exe` available on your `PATH` for this manual setup. [Node.js downloads](https://nodejs.org/en/download)
 
 The installer puts the server at `resources\agent\mcp.cjs` inside Relay’s installation folder. If you run Relay from source, use the absolute path to `src\agent\mcp.cjs` in your checkout. Keep `preferences.cjs` beside `mcp.cjs`.
 
-## Claude Desktop and other local MCP clients
+### Claude Desktop and other local MCP clients
 
 Use **Copy MCP config** in the Agent panel. In Claude Desktop, open **Settings → Developer → Edit Config**, then merge the `relay-browser` entry into the `mcpServers` object in `%APPDATA%\Claude\claude_desktop_config.json`. Restart Claude Desktop. [MCP guide for local servers](https://modelcontextprotocol.io/docs/develop/connect-local-servers)
 
@@ -26,7 +35,7 @@ The entry uses this format. Replace the paths with the locations on your machine
 
 If your agent cannot find `node`, set `command` to its absolute path. To see the executable path in PowerShell, run `(Get-Command node.exe).Source`.
 
-## Codex CLI
+### Existing Codex sessions
 
 From PowerShell, register Relay as a local stdio server. Replace the script path with the absolute path shown in the copied MCP configuration. [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
 
