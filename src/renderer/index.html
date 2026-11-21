@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+  <title>Relay Browser</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script defer src="./app.js"></script>
+</head>
+<body data-tab-position="top" data-theme="dark">
+  <svg class="symbol-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-mark" viewBox="0 0 24 24"><path d="M4 15.5 10.7 4H20l-5.3 8.9h5L13 20H4l5.3-8.9H4z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-agent" viewBox="0 0 24 24"><path d="M12 2.5c.9 5.5 4 8.6 9.5 9.5-5.5.9-8.6 4-9.5 9.5-.9-5.5-4-8.6-9.5-9.5 5.5-.9 8.6-4 9.5-9.5Z"/><path d="M18.5 3v5m-2.5-2.5h5M5.5 17.5v4m-2-2h4"/></symbol>
+    <symbol id="i-minimize" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-maximize" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx=".5"/></symbol>
+    <symbol id="i-restore" viewBox="0 0 24 24"><path d="M8 5h11v11M5 8h11v11H5z"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m12 6-6 6 6 6M6 12h13"/></symbol>
+    <symbol id="i-forward" viewBox="0 0 24 24"><path d="m12 6 6 6-6 6m6-6H5"/></symbol>
+    <symbol id="i-reload" viewBox="0 0 24 24"><path d="M19 11a7 7 0 1 0-1.4 5.2M19 6v5h-5"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="m4 10 8-6 8 6v9a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="6" y="10" width="12" height="10" rx="2"/><path d="M9 10V7a3 3 0 0 1 6 0v3"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><ellipse cx="12" cy="12" rx="3.6" ry="8.5"/><path d="M4 12h16"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.7 5.8 6.3.8-4.6 4.4 1.2 6.2-5.6-3.1-5.6 3.1 1.2-6.2L3 9.6l6.3-.8z"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M4 5v5h5m-5-1a8.5 8.5 0 1 1 .1 6.1M12 8v4l3 2"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m-4-4 4 4 4-4M5 16v4h14v-4"/></symbol>
+    <symbol id="i-extensions" viewBox="0 0 24 24"><path d="M4.5 8H9V6a3 3 0 0 1 6 0v2h4.5v4H18a2.7 2.7 0 0 0 0 5.4h1.5v2.1H5a.5.5 0 0 1-.5-.5v-4h2a2.5 2.5 0 0 0 0-5h-2z"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></symbol>
+    <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-return" viewBox="0 0 24 24"><path d="M19 6v8H5m0 0 4-4m-4 4 4 4"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h5m4 0h7M4 17h10m4 0h2"/><circle cx="11" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></symbol>
+    <symbol id="i-tab-top" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.3"/><path d="M4 10h16"/></symbol>
+    <symbol id="i-tab-left" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.3"/><path d="M10 5v14"/></symbol>
+    <symbol id="i-tab-right" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.3"/><path d="M14 5v14"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M12 5h7v7m0-7-9 9m7 1v4H5V7h4"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 6V4H4v11h2"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="16" cy="8" r="4"/><path d="m13 11-9 9m3-3 2 2m1-5 2 2"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="m14 4 6 6-3 1-2.5 2.5-.5 3.5L7 10l3.5-.5L13 7zM10.5 13.5 5 19"/></symbol>
+    <symbol id="i-audio" viewBox="0 0 24 24"><path d="M4 9h4l4-4v14l-4-4H4zm12 0a4 4 0 0 1 0 6m2-8a7 7 0 0 1 0 10"/></symbol>
+    <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9h4l4-4v14l-4-4H4zm12 1 4 4m0-4-4 4"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 6h6l2 2h8v11H4z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16m-11 0V4h6v3M6 7l1 13h10l1-13m-8 4v5m4-5v5"/></symbol>
+    <symbol id="i-screen" viewBox="0 0 24 24"><path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/></symbol>
+    <symbol id="i-store" viewBox="0 0 24 24"><path d="M5 8h14l1 12H4zM9 9V7a3 3 0 0 1 6 0v2"/><circle cx="12" cy="14" r="2.4"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-2-13-4 16"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5h5a4 4 0 0 1 3 2 4 4 0 0 1 3-2h5v13h-5a4 4 0 0 0-3 2 4 4 0 0 0-3-2H4zm8 2v13"/></symbol>
+    <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 17 17 7M7 7h10v10"/></symbol>
+  </svg>
+
+  <header id="titlebar" class="titlebar">
+    <div class="brand" aria-label="Relay Browser">
+      <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-mark"></use></svg></span>
+      <span class="brand-name">RELAY</span>
+    </div>
+    <div id="topTabs" class="top-tabs"></div>
+    <div class="drag-space"></div>
+    <button id="agentButton" class="icon-button agent-button" type="button" data-panel="agent" aria-label="Agent connection" title="Agent connection" aria-expanded="false">
+      <svg class="icon" aria-hidden="true"><use href="#i-agent"></use></svg><span id="agentDot" class="agent-dot" hidden></span>
+    </button>
+    <div class="window-controls" aria-label="Window controls">
+      <button class="window-button" type="button" data-window="minimize" aria-label="Minimize" title="Minimize"><svg class="icon" aria-hidden="true"><use href="#i-minimize"></use></svg></button>
+      <button id="maximize" class="window-button" type="button" data-window="maximize" aria-label="Maximize" title="Maximize"><svg class="icon" aria-hidden="true"><use href="#i-maximize"></use></svg></button>
+      <button class="window-button window-close" type="button" data-window="close" aria-label="Close window" title="Close window"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button>
+    </div>
+  </header>
+
+  <div id="toolbar" class="toolbar" role="toolbar" aria-label="Browser navigation">
+    <div class="navigation-buttons">
+      <button id="backButton" class="icon-button" type="button" data-action="back" aria-label="Back" title="Back (Alt+Left)"><svg class="icon" aria-hidden="true"><use href="#i-back"></use></svg></button>
+      <button id="forwardButton" class="icon-button" type="button" data-action="forward" aria-label="Forward" title="Forward (Alt+Right)"><svg class="icon" aria-hidden="true"><use href="#i-forward"></use></svg></button>
+      <button id="reloadButton" class="icon-button" type="button" data-action="reload" aria-label="Reload" title="Reload (Ctrl+R)"><svg class="icon" aria-hidden="true"><use href="#i-reload"></use></svg></button>
+      <button class="icon-button home-button" type="button" data-action="home" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg></button>
+    </div>
+    <form id="addressForm" class="address-form">
+      <svg id="siteIcon" class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input id="address" type="text" autocomplete="off" spellcheck="false" aria-label="Address and search bar" placeholder="Search or enter an address">
+      <button id="bookmarkButton" class="icon-button bookmark-toggle" type="button" data-action="bookmarkToggle" aria-label="Bookmark this page" title="Bookmark this page (Ctrl+D)" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-star"></use></svg></button>
+    </form>
+    <div class="toolbar-actions">
+      <button class="icon-button" type="button" data-panel="extensions" aria-label="Extensions" title="Extensions" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-extensions"></use></svg></button>
+      <button class="icon-button downloads-button" type="button" data-panel="downloads" aria-label="Downloads" title="Downloads (Ctrl+J)" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg></button>
+      <button class="icon-button" type="button" data-panel="menu" aria-label="Browser menu" title="Browser menu" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-menu"></use></svg></button>
+    </div>
+  </div>
+
+  <div id="bookmarkBar" class="bookmarks-bar" aria-label="Bookmarks bar" hidden></div>
+  <form id="findBar" class="find-bar" role="search" hidden>
+    <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+    <input id="findQuery" autocomplete="off" spellcheck="false" aria-label="Find in page" placeholder="Find in page">
+    <output id="findCount" for="findQuery" aria-live="polite"></output>
+    <button class="icon-button" type="button" data-find="previous" aria-label="Previous match" title="Previous match"><svg class="icon" aria-hidden="true"><use href="#i-up"></use></svg></button>
+    <button class="icon-button" type="submit" aria-label="Next match" title="Next match"><svg class="icon" aria-hidden="true"><use href="#i-down"></use></svg></button>
+    <button class="icon-button" type="button" data-find="close" aria-label="Close find bar" title="Close find bar"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button>
+  </form>
+  <p id="notice" class="notice" role="status" hidden></p>
+
+  <div id="workspace" class="workspace">
+    <aside id="sideTabs" class="side-tabs" aria-label="Tabs" hidden>
+      <div class="side-tabs-heading"><span>Tabs</span><button class="icon-button" type="button" data-action="newTab" aria-label="New tab" title="New tab (Ctrl+T)"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg></button></div>
+    </aside>
+
+    <main id="page" class="page">
+      <section id="startPage" class="start-page" aria-labelledby="startHeading">
+        <div class="start-content">
+          <div class="hero">
+            <div class="hero-content">
+              <span class="hero-mark" aria-hidden="true"><svg class="icon"><use href="#i-mark"></use></svg></span>
+              <h1 id="startHeading">Where to?</h1>
+              <form id="startForm" class="start-form" role="search">
+                <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+                <input id="startSearch" type="text" aria-label="Search the web or enter a URL" placeholder="Search the web or enter a URL" autocomplete="off" spellcheck="false">
+                <button type="submit" aria-label="Go" title="Go"><svg class="icon" aria-hidden="true"><use href="#i-return"></use></svg></button>
+              </form>
+            </div>
+          </div>
+          <section class="shortcuts" aria-labelledby="shortcutsHeading">
+            <h2 id="shortcutsHeading">Shortcuts</h2>
+            <div class="shortcut-grid">
+              <button class="shortcut" type="button" data-url="https://chromewebstore.google.com/">
+                <span class="shortcut-icon mint"><svg class="icon" aria-hidden="true"><use href="#i-store"></use></svg></span><span>Chrome Web Store</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
+              </button>
+              <button class="shortcut" type="button" data-url="https://github.com/">
+                <span class="shortcut-icon lilac"><svg class="icon" aria-hidden="true"><use href="#i-code"></use></svg></span><span>GitHub</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
+              </button>
+              <button class="shortcut" type="button" data-url="https://www.wikipedia.org/">
+                <span class="shortcut-icon sand"><svg class="icon" aria-hidden="true"><use href="#i-book"></use></svg></span><span>Wikipedia</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
+              </button>
+              <button class="shortcut" type="button" data-panel="agent" aria-expanded="false">
+                <span class="shortcut-icon agent"><svg class="icon" aria-hidden="true"><use href="#i-agent"></use></svg></span><span>Agent connection</span><svg class="icon shortcut-arrow" aria-hidden="true"><use href="#i-arrow-up-right"></use></svg>
+              </button>
+            </div>
+          </section>
+          <div class="start-actions">
+            <button class="text-button" type="button" data-panel="settings" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-sliders"></use></svg>Customize Relay</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="errorPage" class="error-page" aria-labelledby="errorHeading" hidden>
+        <span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-globe"></use></svg></span>
+        <h1 id="errorHeading">This page couldn’t load</h1>
+        <p id="errorDescription"></p>
+        <button class="primary-button" type="button" data-action="reload"><svg class="icon" aria-hidden="true"><use href="#i-reload"></use></svg>Try again</button>
+      </section>
+    </main>
+
+    <aside id="panel" class="panel" aria-labelledby="panelHeading" hidden>
+      <header class="panel-header">
+        <span id="panelIcon" class="panel-icon"></span>
+        <h2 id="panelHeading"></h2>
+        <button class="icon-button panel-close" type="button" data-panel-close aria-label="Close panel" title="Close panel"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button>
+      </header>
+      <div id="panelBody" class="panel-body"></div>
+    </aside>
+  </div>
+</body>
+</html>

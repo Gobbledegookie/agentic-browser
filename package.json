@@ -1,0 +1,57 @@
+{
+  "name": "relay-browser",
+  "productName": "Relay Browser",
+  "version": "0.1.0",
+  "description": "A Chromium browser with a live connection to your choice of agent",
+  "author": "Relay Browser contributors",
+  "license": "MIT",
+  "private": true,
+  "main": "src/main.cjs",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "start": "electron .",
+    "check": "node scripts/check.cjs",
+    "test": "node --test",
+    "dist": "electron-builder --win nsis --x64 --publish never"
+  },
+  "dependencies": { "yauzl": "3.4.0" },
+  "devDependencies": {
+    "electron": "45.4.1",
+    "electron-builder": "26.18.0"
+  },
+  "overrides": {
+    "minimatch@>=9.0.0 <11.0.9": "11.0.9"
+  },
+  "build": {
+    "appId": "org.relaybrowser.desktop",
+    "artifactName": "Relay-Browser-${version}-Windows-${arch}-Setup.${ext}",
+    "directories": { "output": "dist" },
+    "files": ["src/**", "build/icon.ico", "package.json"],
+    "extraResources": [{
+      "from": "src/agent",
+      "to": "agent",
+      "filter": ["mcp.cjs", "preferences.cjs"]
+    }],
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    }
+  }
+}

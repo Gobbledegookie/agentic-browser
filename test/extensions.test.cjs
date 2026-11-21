@@ -1,0 +1,125 @@
+const assert = require('node:assert/strict');
+const { createHash, generateKeyPairSync, sign } = require('node:crypto');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { test } = require('node:test');
+const { createExtensionManager, storeId, verifyStorePackage } = require('../src/extensions.cjs');
+
+const storeExample = 'caacnjeoikecoeepknkbjdcaediamaej';
+
+test('accepts Chrome Web Store IDs and listing URLs', () => {
+  assert.equal(storeId(storeExample), storeExample);
+  assert.equal(
+    storeId('https://chromewebstore.google.com/detail/json-formatter-classic/' + storeExample + '?hl=en'),
+    storeExample,
+  );
+  assert.equal(storeId('https://chrome.google.com/webstore/detail/' + storeExample + '/'), storeExample);
+  for (const url of [
+    'http://chromewebstore.google.com/detail/' + storeExample,
+    'https://chromewebstore.google.com.example.com/detail/' + storeExample,
+    'https://person@chromewebstore.google.com/detail/' + storeExample,
+    'https://chromewebstore.google.com/search/' + storeExample,
+  ]) {
+    assert.throws(() => storeId(url), /Chrome Web Store listing URL/);
+  }
+});
+
+function varint(value) {
+  const bytes = [];
+  while (value > 127) {
+    bytes.push((value & 127) | 128);
+    value >>>= 7;
+  }
+  bytes.push(value);
+  return Buffer.from(bytes);
+}
+
+function field(id, bytes) {
+  return Buffer.concat([varint(id * 8 + 2), varint(bytes.length), bytes]);
+}
+
+test('requires a store publisher signature even with a valid developer proof', () => {
+  const keys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const publicKey = keys.publicKey.export({ type: 'spki', format: 'der' });
+  const idBytes = createHash('sha256').update(publicKey).digest().subarray(0, 16);
+  const id = idBytes.toString('hex').replace(/[0-9a-f]/g, hex => 'abcdefghijklmnop'[Number.parseInt(hex, 16)]);
+  const archive = Buffer.from('example archive bytes');
+  const signedHeader = field(1, idBytes);
+  const signedHeaderSize = Buffer.alloc(4);
+  signedHeaderSize.writeUInt32LE(signedHeader.length);
+  const signature = sign('sha256', Buffer.concat([
+    Buffer.from('CRX3 SignedData\0'), signedHeaderSize, signedHeader, archive,
+  ]), keys.privateKey);
+  const proof = field(3, Buffer.concat([field(1, publicKey), field(2, signature)]));
+  const header = Buffer.concat([proof, field(10000, signedHeader)]);
+  const magic = Buffer.from('Cr24\x03\x00\x00\x00\x00\x00\x00\x00');
+  magic.writeUInt32LE(header.length, 8);
+  const crx = Buffer.concat([magic, header, archive]);
+  assert.throws(() => verifyStorePackage(crx, id), /publisher signature was missing/);
+  assert.throws(() => verifyStorePackage(crx, storeExample), /did not match the requested extension/);
+  crx[crx.length - 1] ^= 1;
+  assert.throws(() => verifyStorePackage(crx, id), /signature did not verify/);
+});
+
+function fakeSession(id) {
+  const loaded = new Map();
+  return {
+    extensions: {
+      async loadExtension(directory, options) {
+        assert.equal(options.allowFileAccess, false);
+        const manifest = JSON.parse(await fs.readFile(path.join(directory, 'manifest.json'), 'utf8'));
+        const extension = { id, manifest, name: manifest.name, version: manifest.version };
+        loaded.set(id, extension);
+        return extension;
+      },
+      getExtension: extensionId => loaded.get(extensionId),
+      removeExtension: extensionId => loaded.delete(extensionId),
+    },
+  };
+}
+
+test('persists an approved unpacked extension and removes it without deleting its source', async t => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'relay-extension-test-'));
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const directory = path.join(folder, 'source');
+  await fs.mkdir(directory);
+  await fs.writeFile(path.join(directory, 'manifest.json'), JSON.stringify({
+    manifest_version: 3,
+    name: 'Fixture',
+    version: '1.0',
+    action: { default_popup: 'popup.html' },
+    content_scripts: [{ matches: ['https://example.test/*'] }],
+    permissions: ['storage'],
+  }));
+  let approved = false;
+  const options = {
+    userData: path.join(folder, 'profile'),
+    selectDirectory: async () => directory,
+    confirmInstall: async details => {
+      assert.deepEqual(details, {
+        name: 'Fixture', version: '1.0', source: 'unpacked', permissions: ['storage'],
+        hostPermissions: ['https://example.test/*'],
+      });
+      return approved;
+    },
+  };
+  const manager = createExtensionManager({ ...options, browserSession: fakeSession(storeExample) });
+  assert.equal(await manager.loadUnpacked(), false);
+  assert.deepEqual(manager.list(), []);
+  approved = true;
+  assert.equal(await manager.loadUnpacked(), true);
+  await assert.rejects(manager.loadUnpacked(), /already registered/);
+
+  const restarted = createExtensionManager({ ...options, browserSession: fakeSession(storeExample) });
+  await restarted.restore();
+  assert.equal(restarted.list()[0].enabled, true);
+  assert.equal(restarted.getPageUrl(storeExample), 'chrome-extension://' + storeExample + '/popup.html');
+  assert.equal(await restarted.remove(storeExample), true);
+  assert.deepEqual(restarted.list(), []);
+  assert.equal((await fs.stat(directory)).isDirectory(), true);
+
+  const removed = createExtensionManager({ ...options, browserSession: fakeSession(storeExample) });
+  await removed.restore();
+  assert.deepEqual(removed.list(), []);
+});
