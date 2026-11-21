@@ -801,7 +801,6 @@ async function launch() {
   for (const event of ['maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen', 'resize']) {
     win.on(event, () => { updateView(); broadcast(); });
   }
-  win.once('ready-to-show', () => win.show());
   win.on('close', () => {
     closing = true;
     clearTimeout(saveTimer);
@@ -820,6 +819,7 @@ async function launch() {
   if (tabs.length) selectTab(previousTab ?? tabs[0]);
   else addTab(profile.data.preferences.homepage);
   await win.loadURL(APP_URL);
+  win.show();
   if (profile.data.agentEnabled) await agent.start().catch((error) => console.error('Starting agent connection:', error));
 }
 
