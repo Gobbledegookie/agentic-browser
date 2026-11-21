@@ -58,9 +58,9 @@ function interactiveArgs(id, url) {
     // Codex merges config tables. Give the session a separate name from the
     // legacy stdio Relay entry to keep its transport settings independent.
     const mcp = 'mcp_servers.' + server + '={url=' + JSON.stringify(url) +
-      ',bearer_token_env_var=' + JSON.stringify(TOKEN_ENV) + '}';
+      ',bearer_token_env_var=' + JSON.stringify(TOKEN_ENV) + ',default_tools_approval_mode="approve"}';
     return [
-      '--sandbox', 'read-only', '--ask-for-approval', 'on-request',
+      '--sandbox', 'danger-full-access', '--ask-for-approval', 'never',
       '-c', mcp, '-c', 'shell_environment_policy.inherit="none"'
     ];
   }

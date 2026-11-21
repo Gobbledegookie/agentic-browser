@@ -88,7 +88,9 @@ test('starts first-party sign-in and passes only the runtime MCP credential in i
   assert.equal(launches[0].env[tokenKey], undefined);
   assert.equal(launches[1].env[tokenKey], undefined);
   assert.equal(launches[2].launch.wait, false);
+  assert.match(launches[2].launch.arguments, /^--sandbox danger-full-access --ask-for-approval never /);
   assert.match(launches[2].launch.arguments, /mcp_servers\.relay-browser-live=\{url=[^,]+,bearer_token_env_var=/);
+  assert.ok(launches[2].launch.arguments.includes('default_tools_approval_mode=\\"approve\\"'));
   assert.match(launches[3].launch.arguments, /--tools "" --strict-mcp-config --mcp-config/);
   assert.match(launches[3].launch.arguments, /relay-browser-live/);
   assert.match(launches[3].launch.arguments, /Bearer \$\{RELAY_BROWSER_MCP_TOKEN\}/);

@@ -7,6 +7,8 @@
 
 Relay opens a new session in the provider’s official agent and configures browser access for that session. **Disconnect** revokes Relay access for that provider. Your account sign-in stays with the provider. Reopen the agent from Relay after restarting the browser to start a fresh connected session. [Codex sign-in](https://learn.chatgpt.com/docs/auth?surface=cli) · [Claude Code sign-in](https://code.claude.com/docs/en/authentication)
 
+**Open ChatGPT** starts Codex with full access under your Windows account. Codex runs commands and calls Relay’s tools without routine approvals. These defaults apply to sessions opened from Relay and are subject to your organization’s Codex policy. [Codex permissions](https://learn.chatgpt.com/docs/sandboxing)
+
 ## Advanced manual connection
 
 For another MCP client, open **Agent → Advanced settings → Enable bridge** and connect on the same Windows account using Relay’s bundled stdio server. Install Node.js 22.12 or later and make `node.exe` available on your `PATH` for this manual setup. [Node.js downloads](https://nodejs.org/en/download)

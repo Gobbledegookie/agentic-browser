@@ -726,7 +726,7 @@
   function renderAgent() {
     const providers = node('div', 'provider-list');
     providers.append(
-      renderProvider('chatgpt', 'ChatGPT', 'Codex', 'agent'),
+      renderProvider('chatgpt', 'ChatGPT', 'Codex · Full access', 'agent'),
       renderProvider('claude', 'Claude', 'Claude Code', 'code'),
     );
     const permissions = node('p', 'provider-permissions',
