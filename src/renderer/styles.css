@@ -133,11 +133,21 @@ body:not([data-tab-position="top"]) .top-tabs-frame { display: none; }
 .tab-select > .is-new-tab { color: var(--accent); }
 .tab-select > .tab-indicator { width: 13px; height: 13px; }
 .tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.tab-close { align-self: center; width: 24px; height: 25px; margin: 0 3px 0 0; border-radius: 5px; }
-.tab-close .icon { width: 14px; height: 14px; }
-.tab-close:hover { background: var(--field); }
+.tab-pin, .tab-close { align-self: center; width: 24px; height: 25px; border-radius: 5px; }
+.tab-pin { opacity: .65; color: var(--muted); }
+.tab-entry:is(:hover, :focus-within, .pinned) .tab-pin { opacity: 1; }
+.tab-entry.pinned .tab-pin { color: var(--accent); }
+.tab-close { margin-right: 3px; }
+.tab-pin .icon, .tab-close .icon { width: 14px; height: 14px; }
+.tab-pin:hover, .tab-close:hover { background: var(--field); }
+.tidy-tabs-button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; min-height: 29px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--secondary); font-size: 12px; font-weight: 630; }
+.tidy-tabs-button .icon { width: 15px; height: 15px; }
+.tidy-tabs-button:hover { background: var(--surface-hover); border-color: var(--border-emphasis); color: var(--text); }
+.tidy-tabs-button[aria-disabled="true"] { opacity: .55; cursor: default; }
+.top-tabs .tidy-tabs-button { margin-inline: 3px; }
+.side-tabs .tidy-tabs-button { justify-content: start; margin-block: 3px; }
 .tab-loading-icon { width: 13px; height: 13px; flex: 0 0 auto; border: 1.5px solid var(--border-emphasis); border-top-color: var(--accent); border-radius: 50%; animation: spin .85s linear infinite; }
-.top-tabs .tab-entry.pinned { width: 51px; }
+.top-tabs .tab-entry.pinned { width: 75px; }
 .top-tabs .tab-entry.pinned .tab-title { display: none; }
 .top-tabs .tab-entry.pinned .tab-select { padding-left: 7px; }
 .top-tabs .tab-entry.pinned .tab-indicator { display: none; }

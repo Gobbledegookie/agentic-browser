@@ -33,6 +33,7 @@ const commands = {
   }),
   selectTab: define('Switch to an open tab.', { id: tabId }, ['id']),
   closeTab: define('Close an open tab.', { id: tabId }, ['id']),
+  tidyTabs: define('Close unpinned tabs in the current workspace. Closed web tabs can be reopened.'),
   duplicateTab: define('Open a copy of an open tab at its current address.', { id: tabId }, ['id']),
   moveTab: define('Move an open tab to a different strip position.', {
     id: tabId,

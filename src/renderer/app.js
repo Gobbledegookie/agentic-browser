@@ -85,6 +85,19 @@
   tabStrip.setAttribute('role', 'tablist');
   tabStrip.setAttribute('aria-label', 'Open tabs');
 
+  const tidyTabsButton = textButton('Tidy', async () => {
+    if (tidyTabsButton.getAttribute('aria-disabled') === 'true') return;
+    tidyTabsButton.setAttribute('aria-disabled', 'true');
+    try {
+      await run('tidyTabs');
+    } finally {
+      tidyTabsButton.removeAttribute('aria-disabled');
+    }
+  }, 'tidy-tabs-button', 'tidy');
+  tidyTabsButton.id = 'tidyTabsButton';
+  tidyTabsButton.title = 'Close unpinned tabs in this workspace';
+  tidyTabsButton.setAttribute('aria-label', 'Tidy unpinned tabs in this workspace');
+
   const addTopTab = iconButton('plus', 'New tab (Ctrl+T)', () => createTab());
   topTabs.append(tabStrip, addTopTab);
   const customNewTabButtons = node('div', 'custom-controls custom-newtab-controls');
@@ -334,18 +347,28 @@
       tabSnapshot = key;
       const focused = document.activeElement;
       const focusedId = focused?.closest('.tab-entry')?.dataset.id;
-      const closeFocused = focused?.classList.contains('tab-close');
+      const focusedControl = ['tab-pin', 'tab-close'].find((name) => focused?.classList.contains(name)) || 'tab-select';
       const previousScroll = [tabStrip.scrollLeft, tabStrip.scrollTop];
       const tabs = state.tabs.map(renderTab);
+      const firstUnpinned = state.tabs.findIndex((tab) => !tab.pinned);
+      if (firstUnpinned >= 0) tabs.splice(firstUnpinned, 0, tidyTabsButton);
       tabStrip.replaceChildren(...tabs);
       tabStrip.scrollTo(...previousScroll);
 
-      const focusedIndex = state.tabs.findIndex((tab) => String(tab.id) === focusedId);
-      if (focusedIndex >= 0) tabs[focusedIndex].children[closeFocused ? 1 : 0].focus({ preventScroll: true });
+      if (focusedId) {
+        renderedTab(focusedId)?.querySelector('.' + focusedControl)?.focus({ preventScroll: true });
+      } else if (focused === tidyTabsButton) {
+        const target = firstUnpinned >= 0 ? tidyTabsButton : renderedTab(state.activeTabId)?.querySelector('.tab-select');
+        target?.focus({ preventScroll: true });
+      }
     }
     if (tabChanged || moved) {
       tabStrip.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
+  }
+
+  function renderedTab(id) {
+    return tabStrip.querySelector('.tab-entry[data-id="' + CSS.escape(String(id)) + '"]');
   }
 
   function renderTab(tab) {
@@ -374,17 +397,14 @@
       audio.classList.add('tab-indicator');
       select.append(audio);
     }
-    if (tab.pinned) {
-      const pin = icon('pin');
-      pin.classList.add('tab-indicator');
-      select.append(pin);
-    }
-
     select.addEventListener('click', () => run('selectTab', { id: tab.id }));
     select.addEventListener('keydown', (event) => handleTabKey(event, tab.id));
+    const pin = iconButton('pin', (tab.pinned ? 'Unpin ' : 'Pin ') + label,
+      () => run('pinTab', { id: tab.id, pinned: !tab.pinned }), 'tab-pin');
+    pin.tabIndex = isActive ? 0 : -1;
     const close = iconButton('close', 'Close ' + label, () => run('closeTab', { id: tab.id }), 'tab-close');
     close.tabIndex = -1;
-    entry.append(select, close);
+    entry.append(select, pin, close);
     entry.addEventListener('contextmenu', (event) => {
       event.preventDefault();
       showTabPanel(tab.id, select);
@@ -416,7 +436,7 @@
     event.preventDefault();
     const next = state.tabs[nextIndex];
     await run('selectTab', { id: next.id });
-    tabStrip.children[nextIndex]?.querySelector('.tab-select')?.focus();
+    renderedTab(next.id)?.querySelector('.tab-select')?.focus();
   }
 
   function renderBookmarkBar() {
@@ -721,7 +741,7 @@
       case 'extensions': return [state.extensions, state.storeListing, pendingStoreInstalls.has(state.storeListing?.id)];
       case 'workspaces': return [state.workspaces, state.activeWorkspaceId];
       case 'tab': return [state.tabs.find((tab) => tab.id === contextTabId), state.workspaces, state.activeWorkspaceId];
-      case 'menu': return [activeTab()?.zoomFactor, state.fullScreen, currentCustomization().buttons];
+      case 'menu': return [activeTab()?.zoomFactor, state.fullScreen, hasUnpinnedTabs(), currentCustomization().buttons];
       default: return null;
     }
   }
@@ -1287,7 +1307,15 @@
     return stack(list(entries), group(add, rename));
   }
 
+  function hasUnpinnedTabs() {
+    return state.tabs.some((tab) => !tab.pinned);
+  }
+
   function renderMenu() {
+    const tidy = hasUnpinnedTabs() ? [menuEntry('Tidy unpinned tabs', 'tidy', () => {
+      closePanel(false);
+      tidyTabsButton.click();
+    })] : [];
     const zoom = node('div', 'zoom-row');
     const factor = activeTab()?.zoomFactor || 1;
     const zoomOut = iconButton('minimize', 'Zoom out', () => changeZoom(-0.1));
@@ -1298,6 +1326,7 @@
       list([
         menuEntry('New tab', 'plus', () => { closePanel(false); createTab(); }, 'Ctrl+T'),
         menuEntry('Reopen closed tab', 'return', () => run('reopenTab'), 'Ctrl+Shift+T'),
+        ...tidy,
         menuEntry('Workspaces', 'workspaces', () => showPanel('workspaces')),
         menuEntry('Bookmarks', 'star', () => showPanel('bookmarks'), 'Ctrl+Shift+O'),
         menuEntry('History', 'history', () => showPanel('history'), 'Ctrl+H'),

@@ -11,6 +11,7 @@ Download the Windows x64 setup file from the [latest release](https://github.com
 - Search or navigate from the address bar. On your first search, choose Google, DuckDuckGo, or Bing. Relay remembers your choice and opens your results. Relay also supports tabs, pinning, session restore, bookmarks, history, downloads, find in page, zoom, and fullscreen.
 - Open **Browser menu → Customize Relay** to move tabs to the top, left, or right. You can also set the theme, homepage, search engine, and bookmarks bar.
 - Use **Workspaces** in the browser menu to switch between groups of tabs. With side tabs, use the workspace name and switcher in the sidebar. Right-click a tab to move it to another workspace.
+- Pin tabs you want to keep, then use **Tidy** to close the other tabs in the current workspace. Use **Reopen closed tab** to bring back recently closed tabs.
 - On a Chrome Web Store extension listing, click **Add to Relay** in the browser toolbar. You can also install by URL or ID or load an unpacked folder from **Extensions**. Relay shows declared permissions before installation. Electron supports a subset of Chrome APIs. Extension updates currently require a manual reinstall. See [extension compatibility](docs/extensions.md).
 - Open **Agent** and choose **ChatGPT** or **Claude**. Relay uses the official Codex or Claude Code sign-in and opens the agent with browser access already configured. Ask it to move your tabs, change the interface, or manage browser settings. **Advanced settings** contains manual setup for other clients. See the [agent connection guide](docs/agent-connection.md).
 - Use **Runtime customization** or your agent to apply custom CSS, replace the new tab page, hide built-in controls, add command buttons, and bind keyboard shortcuts. See the [runtime customization guide](docs/customization.md).
@@ -42,6 +43,12 @@ The Windows installer is written to `dist/`. The GitHub Actions workflow runs th
 | `src/commands.cjs`, `src/customization.cjs` | Discoverable command schemas and persistent interface customization |
 
 The browser controls run in a separate Electron session from webpages. Websites run in sandboxed views without Node.js or the browser controls’ preload. The agent API validates browser commands and keeps the control credential, OS access, and Chromium security settings outside its command surface.
+
+## Publish a release
+
+Merge all intended changes and the new package version into GitHub `main` before releasing. Open [Release Windows x64](https://github.com/Gobbledegookie/agentic-browser/actions/workflows/release-windows.yml), select `main` under **Run workflow**, and check **Publish a GitHub Release after a successful build**. Leaving that option unchecked produces a test installer as a workflow artifact.
+
+GitHub Actions tests and packages that exact commit, checks that `main` still points to it before publishing, and attaches the installer and its SHA-256 checksum to the release. If `main` moves during the run, start a new run to build the current commit. Use this workflow for published installers.
 
 ## Contribute
 

@@ -1,0 +1,129 @@
+name: Release Windows x64
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub Release after a successful build
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the current main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo '::error::Select main when starting the release workflow.'
+            exit 1
+          fi
+          main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$main_sha" != "$GITHUB_SHA" ]]; then
+            echo '::error::Main has moved. Start a new release workflow on main.'
+            exit 1
+          fi
+          echo "Building main commit $GITHUB_SHA"
+
+  build:
+    needs: source
+    uses: ./.github/workflows/windows.yml
+
+  publish:
+    if: inputs.publish && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: windows-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: dist
+      - name: Publish the tested installer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        working-directory: dist
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo '::error::Set a release version such as 0.3.6 in package.json.'
+            exit 1
+          fi
+          tag="v$VERSION"
+          installer="Relay-Browser-$VERSION-Windows-x64-Setup.exe"
+          sha256sum --check "$installer.sha256"
+
+          require_current_main() {
+            local main_sha
+            main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+            if [[ "$main_sha" != "$GITHUB_SHA" ]]; then
+              echo '::error::Main moved during the release build. Start a new run on main.'
+              return 1
+            fi
+          }
+
+          tag_commit() {
+            local ref="refs/tags/$tag" refs sha name commit=''
+            refs=$(git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$ref" "$ref^{}") || return 1
+            while IFS=$'\t' read -r sha name; do
+              if [[ "$name" == "$ref^{}" ]]; then
+                printf '%s\n' "$sha"
+                return
+              fi
+              if [[ "$name" == "$ref" ]]; then
+                commit="$sha"
+              fi
+            done <<< "$refs"
+            printf '%s\n' "$commit"
+          }
+
+          require_current_main
+          existing_commit=$(tag_commit)
+          existing_release=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$tag\") | .id")
+          if [[ -n "$existing_release" || ( -n "$existing_commit" && "$existing_commit" != "$GITHUB_SHA" ) ]]; then
+            echo "::error::$tag already has a release or points to a different commit. Merge a new version to main first."
+            exit 1
+          fi
+
+          # Upload to a draft so a build overtaken during asset upload cannot become latest.
+          draft_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+            -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" -f name="Relay Browser $VERSION" \
+            -f body="Built from GitHub main commit $GITHUB_SHA in [Actions run $GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)." \
+            -F draft=true -F generate_release_notes=true --jq '.id')
+          draft_endpoint="repos/$GITHUB_REPOSITORY/releases/$draft_id"
+          discard_draft() {
+            state=$(gh api "$draft_endpoint" --jq '.draft') || return
+            if [[ "$state" == true ]]; then
+              gh api --method DELETE "$draft_endpoint" || true
+            fi
+          }
+          trap discard_draft EXIT
+
+          gh release upload "$tag" "$installer" "$installer.sha256" --repo "$GITHUB_REPOSITORY"
+          require_current_main
+          current_commit=$(tag_commit)
+          if [[ -z "$current_commit" ]]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" --silent
+            current_commit=$(tag_commit)
+          fi
+          if [[ "$current_commit" != "$GITHUB_SHA" ]]; then
+            echo "::error::$tag does not point to the tested commit."
+            exit 1
+          fi
+          require_current_main
+          gh api --method PATCH "$draft_endpoint" -F draft=false -f make_latest=true --jq '.html_url'
+          trap - EXIT

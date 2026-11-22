@@ -581,7 +581,7 @@ function addTab(url = '', { activate = true, pinned = false, lazy = false, works
   return tab;
 }
 
-function closeTab(tab, remember = true) {
+function closeTab(tab, remember = true, { leaveEmpty = false } = {}) {
   const workspace = workspaceState(tab.workspaceId);
   const { tabs } = workspace;
   const index = tabs.indexOf(tab);
@@ -596,7 +596,7 @@ function closeTab(tab, remember = true) {
   if (tab.id === workspace.activeTabId) {
     const nextId = tabs[Math.min(index, tabs.length - 1)]?.id ?? null;
     if (tab.workspaceId === profile.data.activeWorkspaceId) {
-      if (nextId) selectWorkspace(tab.workspaceId, nextId);
+      if (nextId || leaveEmpty) selectWorkspace(tab.workspaceId, nextId);
       else addTab();
     } else workspace.activeTabId = nextId;
   }
@@ -667,6 +667,17 @@ function reopenTab() {
   const { url, pinned } = closedTabs[index];
   addTab(url, { pinned });
   closedTabs.splice(index, 1);
+}
+
+function tidyTabs() {
+  const selected = activeTab();
+  const unpinned = workspaceState().tabs.filter((tab) => !tab.pinned);
+  // Close the selected tab last so cleanup never loads other tabs that are about to close.
+  for (const tab of unpinned) {
+    if (tab !== selected) closeTab(tab);
+  }
+  if (selected && !selected.pinned) closeTab(selected, true, { leaveEmpty: true });
+  return { closed: unpinned.length };
 }
 
 function goHome() {
@@ -919,6 +930,7 @@ async function runAction(name, p = {}) {
     case 'moveTabToWorkspace': return moveTabToWorkspace(requireTab(p.tabId), p.workspaceId);
     case 'selectTab': selectTab(requireTab(p.id)); break;
     case 'closeTab': closeTab(requireTab(p.id)); break;
+    case 'tidyTabs': return tidyTabs();
     case 'duplicateTab': {
       const tab = requireTab(p.id);
       return { id: addTab(tab.url, { pinned: tab.pinned, workspaceId: tab.workspaceId }).id };

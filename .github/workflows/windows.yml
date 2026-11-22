@@ -1,6 +1,17 @@
 name: Windows x64
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      version:
+        description: Version of the Windows installer
+        value: ${{ jobs.build.outputs.version }}
+      artifact-id:
+        description: Workflow artifact containing the installer and checksum
+        value: ${{ jobs.build.outputs.artifact-id }}
 
 permissions:
   contents: read
@@ -8,8 +19,14 @@ permissions:
 jobs:
   build:
     runs-on: windows-2025
+    outputs:
+      version: ${{ steps.installer.outputs.version }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
@@ -18,8 +35,22 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run dist
+      - name: Identify and hash the installer
+        id: installer
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw -LiteralPath package.json | ConvertFrom-Json).version
+          $file = "Relay-Browser-$version-Windows-x64-Setup.exe"
+          $installer = (Resolve-Path -LiteralPath "dist/$file" -ErrorAction Stop).Path
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$installer.sha256", "$hash  $file`n")
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "file=$file" >> $env:GITHUB_OUTPUT
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: upload
         with:
-          name: Relay-Browser-Windows-x64
-          path: dist/*-Setup.exe
+          name: Relay-Browser-Windows-x64-${{ github.run_attempt }}
+          path: |
+            dist/${{ steps.installer.outputs.file }}
+            dist/${{ steps.installer.outputs.file }}.sha256
           if-no-files-found: error

@@ -8,6 +8,7 @@ test('publishes an independent closed argument schema for every supported comman
   const manifest = listBrowserCommands();
   assert.equal(manifest.length, new Set(manifest.map(({ name }) => name)).size);
   assert.ok(manifest.some(({ name }) => name === 'clearBrowsingData'));
+  assert.ok(manifest.some(({ name }) => name === 'tidyTabs'));
   for (const { inputSchema } of manifest) {
     assert.equal(inputSchema.type, 'object');
     assert.equal(inputSchema.additionalProperties, false);
@@ -31,6 +32,7 @@ test('rejects undisclosed commands and arguments that cross the browser boundary
     ['clearBrowsingData', { types: ['cookies', 'cookies'] }],
     ['clearBrowsingData', { types: ['credentials'] }],
     ['moveTab', { id: 'tab-id', index: 0.5 }],
+    ['tidyTabs', { workspaceId: 'other-workspace' }],
     ['createWorkspace', { name: '   ' }],
     ['renameWorkspace', { workspaceId: 'work', name: 'a'.repeat(61) }],
     ['moveTabToWorkspace', { tabId: 'tab-id' }],
@@ -52,6 +54,7 @@ test('rejects undisclosed commands and arguments that cross the browser boundary
 
 test('normalizes supported changes using the browser’s URL and preference rules', () => {
   assert.deepEqual(validateBrowserCommand('newTab'), {});
+  assert.deepEqual(validateBrowserCommand('tidyTabs'), {});
   assert.deepEqual(validateBrowserCommand('navigate', { input: '  example.test  ' }), { input: 'example.test' });
   assert.deepEqual(validateBrowserCommand('moveTab', { id: 'tab-id', index: 2 }), { id: 'tab-id', index: 2 });
   assert.deepEqual(validateBrowserCommand('pinTab', { id: 'tab-id', pinned: false }), { id: 'tab-id', pinned: false });
