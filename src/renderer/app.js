@@ -470,8 +470,13 @@
 
     const installing = pendingStoreInstalls.has(listing.id);
     const status = get('storeStatus');
+    const startupFailure = !installing && listing.installed && listing.runtimeError;
     status.hidden = !installing && !listing.installed;
-    status.textContent = installing ? 'Preparing installation…' : (listing.installed ? 'Installed in Relay' : '');
+    status.classList.toggle('store-runtime-error', Boolean(startupFailure));
+    status.title = startupFailure || '';
+    if (startupFailure) status.textContent = 'Couldn’t start. ' + startupFailure;
+    else if (installing) status.textContent = 'Preparing installation…';
+    else status.textContent = listing.installed ? 'Installed in Relay' : '';
     storeAction.disabled = installing;
     storeAction.className = listing.installed ? 'secondary-button' : 'primary-button';
     storeAction.textContent = installing ? 'Installing…' : (listing.installed ? 'Manage extensions' : 'Add to Relay');
@@ -1070,14 +1075,29 @@
       }
     });
     const manage = state.extensions.length ? list(state.extensions.map((extension) => {
-      const { id, name, version, description, source, enabled, error, hasPage } = extension;
+      const { id, name, version, description, source, enabled, error, runtimeError, hasPage } = extension;
       const row = item(name || id,
         [version, source === 'store' ? 'Chrome Web Store' : 'Unpacked', enabled === false ? 'Inactive' : ''].filter(Boolean).join(' · '));
       row.classList.add('vertical');
       if (description) row.append(node('p', 'muted', description));
-      if (error) row.append(node('p', 'item-error', error));
+      if (error && error !== runtimeError) row.append(node('p', 'item-error', error));
+      const startupStatusId = 'extension-startup-' + id;
+      if (runtimeError) {
+        const failure = node('div', 'extension-startup-failure');
+        failure.id = startupStatusId;
+        failure.setAttribute('role', 'status');
+        failure.append(node('strong', '', 'Couldn’t start'), node('p', '', runtimeError));
+        row.append(failure);
+      }
       const controls = group();
-      if (hasPage) controls.append(textButton('Open extension', () => run('openExtension', { id }), 'secondary-button', 'external'));
+      if (hasPage) {
+        const open = textButton(runtimeError ? 'Try again' : 'Open extension',
+          () => run('openExtension', { id }), runtimeError ? 'primary-button' : 'secondary-button',
+          runtimeError ? 'reload' : 'external');
+        open.name = 'extension-open-' + id;
+        if (runtimeError) open.setAttribute('aria-describedby', startupStatusId);
+        controls.append(open);
+      }
       controls.append(textButton('Remove', () => run('removeExtension', { id }), 'secondary-button', 'trash'));
       row.append(controls);
       return row;
@@ -1090,12 +1110,15 @@
     ];
     const currentListing = state.storeListing;
     if (currentListing) {
-      const { id, installed } = currentListing;
+      const { id, installed, runtimeError } = currentListing;
       const installing = pendingStoreInstalls.has(id);
       const attach = textButton(installing ? 'Installing…' : 'Add to Relay', () => installCurrentStoreListing(id), 'primary-button');
       attach.disabled = installing;
+      const installedMessage = runtimeError
+        ? 'This extension couldn’t start. See Installed extensions for details.'
+        : 'This extension is installed in Relay.';
       sections.unshift(section('Current Chrome Web Store listing',
-        installed ? node('p', '', 'This extension is installed in Relay.') : group(attach)));
+        installed ? node('p', '', installedMessage) : group(attach)));
     }
     return stack(...sections);
   }

@@ -135,6 +135,7 @@ test('persists an approved unpacked extension and removes it without deleting it
   await restarted.restore();
   assert.equal(restarted.list()[0].enabled, true);
   assert.equal(restarted.getPageUrl(storeExample), 'chrome-extension://' + storeExample + '/popup.html');
+  assert.equal(await restarted.prepareOpen(storeExample), restarted.getPageUrl(storeExample));
   assert.equal(await restarted.remove(storeExample), true);
   assert.deepEqual(restarted.list(), []);
   assert.equal((await fs.stat(directory)).isDirectory(), true);
@@ -142,4 +143,76 @@ test('persists an approved unpacked extension and removes it without deleting it
   const removed = createExtensionManager({ ...options, browserSession: fakeSession(storeExample) });
   await removed.restore();
   assert.deepEqual(removed.list(), []);
+});
+
+
+async function installWorkerFixture(t, startWorkerForScope) {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'relay-extension-worker-test-'));
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const directory = path.join(folder, 'source');
+  await fs.mkdir(directory);
+  await fs.writeFile(path.join(directory, 'manifest.json'), JSON.stringify({
+    manifest_version: 3,
+    name: 'Worker Fixture',
+    version: '1.0',
+    action: { default_popup: 'popup.html' },
+    background: { service_worker: 'worker.js' },
+  }));
+  const browserSession = fakeSession(storeExample);
+  if (startWorkerForScope) browserSession.serviceWorkers = { startWorkerForScope };
+  const manager = createExtensionManager({
+    browserSession,
+    userData: path.join(folder, 'profile'),
+    selectDirectory: async () => directory,
+    confirmInstall: async () => true,
+  });
+  assert.equal(await manager.loadUnpacked(), true);
+  return manager;
+}
+
+test('coalesces concurrent opens and retries a service worker that is still registering', async t => {
+  const scopes = [];
+  const manager = await installWorkerFixture(t, async scope => {
+    scopes.push(scope);
+    if (scopes.length === 1) throw new Error('Worker is not registered yet.');
+  });
+  const popup = 'chrome-extension://' + storeExample + '/popup.html';
+  assert.deepEqual(await Promise.all([manager.prepareOpen(storeExample), manager.prepareOpen(storeExample)]), [popup, popup]);
+  assert.deepEqual(scopes, Array(2).fill('chrome-extension://' + storeExample + '/'));
+  assert.equal(manager.list()[0].runtimeError, null);
+});
+
+test('blocks a persistently broken extension without exposing native startup details', async t => {
+  const rawDetail = 'Internal extension diagnostic containing private information';
+  let failedAttempts = 0;
+  let healthy = false;
+  const manager = await installWorkerFixture(t, async () => {
+    if (healthy) return;
+    failedAttempts += 1;
+    throw new Error(rawDetail);
+  });
+  await assert.rejects(manager.prepareOpen(storeExample), error => {
+    assert.match(error.message, /could not start this extension/);
+    assert.doesNotMatch(error.message, /private information/);
+    assert.equal(manager.list()[0].runtimeError, error.message);
+    return true;
+  });
+  assert.equal(failedAttempts, 4);
+  assert.equal(manager.list()[0].enabled, true);
+
+  healthy = true;
+  assert.equal(await manager.prepareOpen(storeExample), manager.getPageUrl(storeExample));
+  assert.equal(manager.list()[0].runtimeError, null);
+});
+
+test('a pending worker times out without a persistent incompatibility diagnosis', async t => {
+  const manager = await installWorkerFixture(t, () => new Promise(() => {}));
+  await assert.rejects(manager.prepareOpen(storeExample), /did not finish starting/);
+  assert.equal(manager.list()[0].runtimeError, null);
+});
+
+test('keeps declared extension pages usable when the Electron worker API is unavailable', async t => {
+  const manager = await installWorkerFixture(t);
+  assert.equal(await manager.prepareOpen(storeExample), manager.getPageUrl(storeExample));
+  assert.equal(manager.list()[0].runtimeError, null);
 });

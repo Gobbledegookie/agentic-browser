@@ -8,4 +8,6 @@ For development or an extension distributed as source, choose **Load unpacked** 
 
 Where an extension declares a popup or options page, use **Open** next to the extension. Relay displays the page in a browser tab. Some extensions rely on browser actions, background APIs, or permissions that Electron does not implement, so compatibility varies even when installation succeeds. See the [extension APIs supported by Electron](https://www.electronjs.org/docs/latest/api/extensions).
 
+Relay checks that an extension’s background service worker can start before opening its page. If startup fails, the Extensions panel shows **Couldn’t start** and offers **Try again**. LastPass currently installs from the Store, and its toolbar depends on Chrome APIs that are unavailable in Relay.
+
 Relay checks Store packages against the requested extension ID and both the developer signature and production publisher key before extracting them. To get a newer Store version, remove the extension and install it again. [Chrome Web Store publisher key](https://chromium.googlesource.com/chromium/src/+/main/components/crx_file/crx_verifier.cc)

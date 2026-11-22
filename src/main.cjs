@@ -129,11 +129,16 @@ function getState() {
   const mcpPath = app.isPackaged ? path.join(process.resourcesPath, 'agent', 'mcp.cjs') : path.join(__dirname, 'agent', 'mcp.cjs');
   const browser = getBrowserState();
   const extensionId = currentStoreListing();
+  const installedExtension = browser.extensions.find(({ id }) => id === extensionId);
   return {
     ...browser,
     pendingSearch: pendingSearch ? { id: pendingSearch.id, query: pendingSearch.query } : null,
     searchProviders: SEARCH_PROVIDERS,
-    storeListing: extensionId ? { id: extensionId, installed: browser.extensions.some(({ id }) => id === extensionId) } : null,
+    storeListing: extensionId ? {
+      id: extensionId,
+      installed: Boolean(installedExtension),
+      ...(installedExtension?.runtimeError ? { runtimeError: installedExtension.runtimeError } : {})
+    } : null,
     providers: providerConnections.snapshot(),
     agent: { ...agent.status(), mcpCommand: 'node', mcpArgs: [mcpPath], mcpEnv: { RELAY_AGENT_FILE: discoveryPath } }
   };
@@ -672,7 +677,7 @@ async function runAction(name, p = {}) {
       return extensions.remove(p.id);
     }
     case 'openExtension': {
-      const url = extensions.getPageUrl(p.id);
+      const url = await extensions.prepareOpen(p.id);
       if (!url) throw new Error('This extension does not expose a popup or options page.');
       addTab(url);
       break;

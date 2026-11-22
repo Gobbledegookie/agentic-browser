@@ -3,6 +3,7 @@ const { createWriteStream } = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pipeline } = require('node:stream/promises');
+const { setTimeout: delay } = require('node:timers/promises');
 const yauzl = require('yauzl');
 
 const extensionIdPattern = /^[a-p]{32}$/;
@@ -279,11 +280,38 @@ function extensionPage(extension) {
   return null;
 }
 
+const workerStartupError = 'Relay could not start this extension’s background service worker. It may require Chrome APIs that Relay does not support.';
+const workerTimeoutError = 'The extension’s background service worker did not finish starting. Try opening the extension again.';
+
+async function startExtensionWorker(serviceWorkers, scope) {
+  const deadline = performance.now() + 3000;
+  // Chromium can still be registering a service worker immediately after the extension loads.
+  for (const pause of [0, 150, 400, 850]) {
+    if (pause) await delay(Math.min(pause, Math.max(0, deadline - performance.now())));
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) return 'timeout';
+    let timeout;
+    const deadlineResult = new Promise(resolve => { timeout = setTimeout(resolve, remaining, 'timeout'); });
+    try {
+      const result = await Promise.race([
+        Promise.resolve().then(() => serviceWorkers.startWorkerForScope(scope)).then(() => 'started', () => 'failed'),
+        deadlineResult,
+      ]);
+      if (result !== 'failed') return result;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  return 'failed';
+}
+
 function createExtensionManager({ browserSession, userData, selectDirectory, confirmInstall }) {
   const extensions = browserSession.extensions;
   const root = path.resolve(userData, 'extensions');
   const registryPath = path.join(root, 'registry.json');
   const records = new Map();
+  const workerProbes = new WeakMap();
+  const runtimeErrors = new WeakMap();
   let queue = Promise.resolve();
   let restorePromise;
 
@@ -386,6 +414,7 @@ function createExtensionManager({ browserSession, userData, selectDirectory, con
         source: record.source,
         enabled: Boolean(extension),
         error: record.error || null,
+        runtimeError: runtimeErrors.get(record) || null,
         hasPage: Boolean(extension && extensionPage(extension)),
       };
     });
@@ -477,7 +506,36 @@ function createExtensionManager({ browserSession, userData, selectDirectory, con
     return extension ? extensionPage(extension) : null;
   }
 
-  return { restore, list, loadUnpacked, installFromStore, remove, getPageUrl };
+  async function prepareOpen(id) {
+    await restore();
+    const record = records.get(id);
+    const extension = record && extensions.getExtension(id);
+    const page = extension && extensionPage(extension);
+    if (!page) return null;
+
+    const serviceWorkers = browserSession.serviceWorkers;
+    if (!extension.manifest.background?.service_worker || typeof serviceWorkers?.startWorkerForScope !== 'function') {
+      return page;
+    }
+
+    let probe = workerProbes.get(record);
+    if (!probe) {
+      probe = startExtensionWorker(serviceWorkers, 'chrome-extension://' + id + '/')
+        .finally(() => workerProbes.delete(record));
+      workerProbes.set(record, probe);
+    }
+    const result = await probe;
+    if (records.get(id) !== record || getPageUrl(id) !== page) return null;
+    if (result === 'started') {
+      runtimeErrors.delete(record);
+      return page;
+    }
+    if (result === 'timeout') throw new Error(workerTimeoutError);
+    runtimeErrors.set(record, workerStartupError);
+    throw new Error(workerStartupError);
+  }
+
+  return { restore, list, loadUnpacked, installFromStore, remove, getPageUrl, prepareOpen };
 }
 
 module.exports = { createExtensionManager, storeId, storeListingId, verifyStorePackage };
