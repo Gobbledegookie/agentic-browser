@@ -18,6 +18,8 @@
     <symbol id="i-restore" viewBox="0 0 24 24"><path d="M8 5h11v11M5 8h11v11H5z"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="m14.5 6.5 3 3M4.5 19.5l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z"/></symbol>
+    <symbol id="i-workspaces" viewBox="0 0 24 24"><rect x="4" y="8" width="12" height="12" rx="2"/><path d="M8 4h10a2 2 0 0 1 2 2v10"/></symbol>
     <symbol id="i-back" viewBox="0 0 24 24"><path d="m12 6-6 6 6 6M6 12h13"/></symbol>
     <symbol id="i-forward" viewBox="0 0 24 24"><path d="m12 6 6 6-6 6m6-6H5"/></symbol>
     <symbol id="i-reload" viewBox="0 0 24 24"><path d="M19 11a7 7 0 1 0-1.4 5.2M19 6v5h-5"/></symbol>
@@ -61,8 +63,29 @@
         <span class="brand-name">RELAY</span>
       </div>
     </div>
-    <div class="top-tabs-frame"><div id="topTabs" class="top-tabs"></div></div>
-    <div class="drag-space"></div>
+    <div class="drag-space" aria-hidden="true"></div>
+    <div class="toolbar-frame">
+      <div id="toolbar" class="toolbar" role="toolbar" aria-label="Browser navigation">
+        <div class="navigation-buttons">
+          <button id="backButton" class="icon-button" type="button" data-action="back" aria-label="Back" title="Back (Alt+Left)"><svg class="icon" aria-hidden="true"><use href="#i-back"></use></svg></button>
+          <button id="forwardButton" class="icon-button" type="button" data-action="forward" aria-label="Forward" title="Forward (Alt+Right)"><svg class="icon" aria-hidden="true"><use href="#i-forward"></use></svg></button>
+          <button id="reloadButton" class="icon-button" type="button" data-action="reload" aria-label="Reload" title="Reload (Ctrl+R)"><svg class="icon" aria-hidden="true"><use href="#i-reload"></use></svg></button>
+          <button class="icon-button home-button" type="button" data-action="home" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg></button>
+        </div>
+        <form id="addressForm" class="address-form">
+          <svg id="siteIcon" class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+          <input id="address" type="text" autocomplete="off" spellcheck="false" aria-label="Address and search bar" placeholder="Search or enter an address">
+          <button id="bookmarkButton" class="icon-button bookmark-toggle" type="button" data-action="bookmarkToggle" aria-label="Bookmark this page" title="Bookmark this page (Ctrl+D)" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-star"></use></svg></button>
+        </form>
+        <div id="customToolbarButtons" class="custom-controls custom-toolbar-controls" aria-label="Custom toolbar controls" hidden></div>
+        <div class="toolbar-actions">
+          <button id="lastPassButton" class="icon-button lastpass-button" type="button" aria-label="Open LastPass" title="Open LastPass" hidden><svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg><span id="lastPassBadge" class="extension-badge" aria-hidden="true" hidden></span></button>
+          <button class="icon-button" type="button" data-panel="extensions" aria-label="Extensions" title="Extensions" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-extensions"></use></svg></button>
+          <button class="icon-button downloads-button" type="button" data-panel="downloads" aria-label="Downloads" title="Downloads (Ctrl+J)" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg></button>
+          <button class="icon-button" type="button" data-panel="menu" aria-label="Browser menu" title="Browser menu" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-menu"></use></svg></button>
+        </div>
+      </div>
+    </div>
     <div class="caption-area">
       <button id="agentButton" class="icon-button agent-button" type="button" data-panel="agent" aria-label="Agent connection" title="Agent connection" aria-expanded="false">
         <svg class="icon" aria-hidden="true"><use href="#i-agent"></use></svg><span id="agentDot" class="agent-dot" hidden></span>
@@ -75,28 +98,7 @@
     </div>
   </header>
 
-  <div class="toolbar-frame">
-    <div id="toolbar" class="toolbar" role="toolbar" aria-label="Browser navigation">
-      <div class="navigation-buttons">
-        <button id="backButton" class="icon-button" type="button" data-action="back" aria-label="Back" title="Back (Alt+Left)"><svg class="icon" aria-hidden="true"><use href="#i-back"></use></svg></button>
-        <button id="forwardButton" class="icon-button" type="button" data-action="forward" aria-label="Forward" title="Forward (Alt+Right)"><svg class="icon" aria-hidden="true"><use href="#i-forward"></use></svg></button>
-        <button id="reloadButton" class="icon-button" type="button" data-action="reload" aria-label="Reload" title="Reload (Ctrl+R)"><svg class="icon" aria-hidden="true"><use href="#i-reload"></use></svg></button>
-        <button class="icon-button home-button" type="button" data-action="home" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg></button>
-      </div>
-      <form id="addressForm" class="address-form">
-        <svg id="siteIcon" class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
-        <input id="address" type="text" autocomplete="off" spellcheck="false" aria-label="Address and search bar" placeholder="Search or enter an address">
-        <button id="bookmarkButton" class="icon-button bookmark-toggle" type="button" data-action="bookmarkToggle" aria-label="Bookmark this page" title="Bookmark this page (Ctrl+D)" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-star"></use></svg></button>
-      </form>
-      <div id="customToolbarButtons" class="custom-controls custom-toolbar-controls" aria-label="Custom toolbar controls" hidden></div>
-      <div class="toolbar-actions">
-        <button id="lastPassButton" class="icon-button lastpass-button" type="button" aria-label="Open LastPass" title="Open LastPass" hidden><svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg><span id="lastPassBadge" class="extension-badge" aria-hidden="true" hidden></span></button>
-        <button class="icon-button" type="button" data-panel="extensions" aria-label="Extensions" title="Extensions" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-extensions"></use></svg></button>
-        <button class="icon-button downloads-button" type="button" data-panel="downloads" aria-label="Downloads" title="Downloads (Ctrl+J)" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg></button>
-        <button class="icon-button" type="button" data-panel="menu" aria-label="Browser menu" title="Browser menu" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-menu"></use></svg></button>
-      </div>
-    </div>
-  </div>
+  <div class="top-tabs-frame"><div id="topTabs" class="top-tabs"></div></div>
 
   <div class="utility-frame">
     <div id="bookmarkBar" class="bookmarks-bar" aria-label="Bookmarks bar" hidden></div>
@@ -121,9 +123,18 @@
 
   <div id="workspace" class="workspace">
     <div id="workspaceFrame" class="workspace-frame">
-      <aside id="sideTabs" class="side-tabs" aria-label="Tabs" hidden>
+      <aside id="sideTabs" class="side-tabs" aria-label="Workspaces and tabs" hidden>
+        <div class="workspace-heading">
+          <button id="workspaceCurrent" class="workspace-current" type="button"></button>
+          <button id="renameWorkspace" class="icon-button workspace-reveal" type="button" aria-label="Rename workspace" title="Rename workspace" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-edit"></use></svg></button>
+          <button id="addWorkspace" class="icon-button workspace-reveal" type="button" aria-label="New workspace" title="New workspace" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg></button>
+        </div>
         <div class="side-tabs-heading"><span>Tabs</span><button id="addSidebarTab" class="icon-button" type="button" data-action="newTab" aria-label="New tab" title="New tab (Ctrl+T)"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg></button></div>
         <div id="customSidebarButtons" class="custom-controls custom-sidebar-controls" aria-label="Custom sidebar controls" hidden></div>
+        <footer id="workspaceFooter" class="workspace-footer">
+          <nav id="workspaceBreadcrumbs" class="workspace-breadcrumbs" aria-label="Switch workspace"></nav>
+          <button id="addWorkspaceFooter" class="icon-button workspace-reveal" type="button" aria-label="New workspace" title="New workspace" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg></button>
+        </footer>
       </aside>
 
       <main id="page" class="page">
@@ -202,5 +213,18 @@
       <button id="cancelSearchProvider" class="secondary-button" type="button">Cancel</button>
     </footer>
   </dialog>
+
+  <div id="workspacePopover" class="workspace-popover" popover="auto" role="dialog" aria-labelledby="workspacePopoverHeading">
+    <h2 id="workspacePopoverHeading"></h2>
+    <form id="workspaceNameForm">
+      <label class="field-label" for="workspaceName">Workspace name
+        <input id="workspaceName" name="workspaceName" type="text" autocomplete="off" spellcheck="false" maxlength="60" pattern=".*\S.*" required autofocus>
+      </label>
+      <div class="workspace-popover-actions">
+        <button id="workspaceNameCancel" class="secondary-button" type="button">Cancel</button>
+        <button id="workspaceNameSubmit" class="primary-button" type="submit"></button>
+      </div>
+    </form>
+  </div>
 </body>
 </html>

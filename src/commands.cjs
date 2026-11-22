@@ -4,6 +4,10 @@ const { DEFAULT_PREFERENCES, preferenceSchema, validatePreferencesPatch } = requ
 const { resolveAddress, webURL } = require('./address.cjs');
 
 const tabId = { type: 'string', minLength: 1, maxLength: 128, description: 'Tab ID from the browser state.' };
+const workspaceId = { ...tabId, description: 'Workspace ID from the browser state.' };
+const workspaceName = {
+  type: 'string', minLength: 1, maxLength: 60, pattern: '\\S', description: 'Display name for the workspace.'
+};
 const bookmarkId = { ...tabId, description: 'Bookmark ID from the browser state.' };
 const downloadId = { ...tabId, description: 'Download ID from the browser state.' };
 const extensionId = { type: 'string', pattern: '^[a-p]{32}$', description: 'Chrome extension ID from the browser state.' };
@@ -34,6 +38,14 @@ const commands = {
     id: tabId,
     index: { type: 'integer', minimum: 0, maximum: 99, description: 'Zero-based position in the tab list.' }
   }, ['id', 'index']),
+  createWorkspace: define('Create and switch to a named workspace.', { name: workspaceName }, ['name']),
+  selectWorkspace: define('Switch to a workspace and show its open tabs.', { workspaceId }, ['workspaceId']),
+  renameWorkspace: define('Change the display name of a workspace.', {
+    workspaceId, name: workspaceName
+  }, ['workspaceId', 'name']),
+  moveTabToWorkspace: define('Move an open tab to a different workspace.', {
+    tabId, workspaceId
+  }, ['tabId', 'workspaceId']),
   pinTab: define('Set whether a tab is pinned, or toggle its current state.', {
     id: tabId, pinned: { type: 'boolean' }
   }, ['id']),

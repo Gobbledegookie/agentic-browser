@@ -7,7 +7,7 @@ const { mkdir, writeFile } = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { randomUUID } = require('node:crypto');
-const { createProfile, webURL, MAX_HISTORY } = require('./profile.cjs');
+const { createProfile, webURL, workspaceName, MAX_HISTORY, MAX_TABS } = require('./profile.cjs');
 const { classifyAddress, searchURL, SEARCH_PROVIDERS } = require('./address.cjs');
 const { createAgentBridge } = require('./agent/bridge.cjs');
 const { validatePreferencesPatch } = require('./agent/preferences.cjs');
@@ -23,7 +23,6 @@ const { createProviderConnections } = require('./agent/provider-connections.cjs'
 
 const APP_URL = 'relay://shell/index.html';
 const RENDERER_DIR = path.join(__dirname, 'renderer');
-const MAX_TABS = 100;
 const PERMISSIONS = new Map([
   ['media', 'use your camera or microphone'],
   ['geolocation', 'access your location'],
@@ -49,7 +48,6 @@ let emitLastPass;
 let agent;
 let providerConnections;
 let discoveryPath;
-let activeTabId;
 let visibleView;
 let viewport;
 let pendingSearch;
@@ -59,23 +57,32 @@ let closing = false;
 let agentTransition = Promise.resolve();
 let stoppingAgent = false;
 let agentStopped = false;
-const tabs = [];
+const workspaceStates = new Map();
 const closedTabs = [];
 const activeDownloads = new Map();
 const sitePermissions = new Map();
 const lastPassWindows = new Map();
 
+function workspaceState(id = profile.data.activeWorkspaceId) {
+  return workspaceStates.get(id);
+}
+
+function allTabs() {
+  return Array.from(workspaceStates.values()).flatMap(({ tabs }) => tabs);
+}
+
 function activeTab() {
+  const { tabs, activeTabId } = workspaceState();
   return tabs.find((tab) => tab.id === activeTabId);
 }
 
-function chromeTab(tab) {
+function chromeTab(tab, index = allTabs().indexOf(tab)) {
   const wc = tab?.view?.webContents;
   if (!wc || wc.isDestroyed()) return undefined;
   const active = tab === activeTab();
   const canShareLocation = !tab.url || webURL(tab.url) || isLastPassPage(tab.url);
   return {
-    id: wc.id, windowId: win.id, index: tabs.indexOf(tab), active, highlighted: active,
+    id: wc.id, windowId: win.id, index, active, highlighted: active,
     pinned: tab.pinned, status: wc.isLoading() ? 'loading' : 'complete', incognito: false,
     ...(canShareLocation ? { url: tab.url || 'about:blank', title: tab.title } : {}),
     audible: wc.isCurrentlyAudible(), mutedInfo: { muted: wc.isAudioMuted() }
@@ -155,10 +162,10 @@ function showLastPassWindow({ url, focused, left, top, width, height }) {
 }
 
 function lastPassController() {
-  const tabById = (id) => tabs.find((tab) => chromeTab(tab)?.id === id);
+  const tabById = (id) => allTabs().find((tab) => tab.view?.webContents.id === id);
   const windowById = (id) => id == null || id === -2 || id === win.id ? win : lastPassWindows.get(id);
   return {
-    getTabs: () => tabs.map(chromeTab).filter(Boolean),
+    getTabs: () => allTabs().map(chromeTab).filter(Boolean),
     getActiveTab: () => chromeTab(activeTab()),
     getWindow: (id) => chromeWindow(windowById(id)),
     getWindows: () => [win, ...lastPassWindows.values()].map(chromeWindow).filter(Boolean),
@@ -170,13 +177,13 @@ function lastPassController() {
     updateTab(id, changes) {
       const tab = tabById(id);
       if (!tab) throw new Error('No such tab.');
-      if (changes.url === 'about:blank') goHome(tab);
+      if (changes.url === 'about:blank') resetTabToStartPage(tab);
       else if (changes.url) navigate(tab, changes.url);
       if (changes.active) selectTab(tab);
       if (changes.pinned !== undefined) pinTab(tab, changes.pinned);
+      attachView(tab);
       if (changes.muted !== undefined) tab.view.webContents.setAudioMuted(changes.muted);
       broadcast();
-      attachView(tab);
       return chromeTab(tab);
     },
     removeTab(id) {
@@ -218,8 +225,9 @@ function saveSoon() {
 }
 
 function saveProfile() {
-  profile.data.lastSession = tabs.filter((tab) => !tab.url || webURL(tab.url)).map((tab) => ({
-    url: tab.url, pinned: tab.pinned, active: tab.id === activeTabId
+  profile.data.lastSession = allTabs().filter((tab) => !tab.url || webURL(tab.url)).map((tab) => ({
+    workspaceId: tab.workspaceId, url: tab.url, pinned: tab.pinned,
+    active: tab.id === workspaceState(tab.workspaceId).activeTabId
   }));
   profile.save();
 }
@@ -238,7 +246,10 @@ function broadcast() {
 }
 
 function getBrowserState() {
+  const { tabs, activeTabId } = workspaceState();
   return {
+    workspaces: profile.data.workspaces.map((workspace) => ({ ...workspace })),
+    activeWorkspaceId: profile.data.activeWorkspaceId,
     tabs: tabs.map(({ view, findRequestId, ...tab }) => {
       const wc = view?.webContents;
       const live = wc && !wc.isDestroyed();
@@ -260,7 +271,7 @@ function getBrowserState() {
     history: profile.data.history,
     downloads: profile.data.downloads.map(({ file, ...download }) => download),
     extensions: extensions.list(),
-    recentlyClosedTabs: closedTabs.map((tab) => ({ ...tab })),
+    recentlyClosedTabs: closedTabs.filter((tab) => tab.workspaceId === profile.data.activeWorkspaceId).map((tab) => ({ ...tab })),
     sitePermissions: Array.from(sitePermissions.values()),
     window: {
       bounds: win.getBounds(), normalBounds: win.getNormalBounds(), minimized: win.isMinimized(),
@@ -436,7 +447,14 @@ function attachView(tab) {
   wc.on('will-redirect', (event) => { if (event.isMainFrame) pageNavigation(event); });
   wc.on('content-bounds-updated', (event) => event.preventDefault());
   wc.setWindowOpenHandler(({ url, disposition, postBody }) => {
-    if (webURL(url) && !postBody) setImmediate(() => attempt(() => addTab(url, { activate: disposition !== 'background-tab' })));
+    if (webURL(url) && !postBody) setImmediate(() => attempt(() => {
+      const { workspaceId } = tab;
+      if (!workspaceState(workspaceId).tabs.includes(tab)) return;
+      addTab(url, {
+        workspaceId,
+        activate: workspaceId === profile.data.activeWorkspaceId && disposition !== 'background-tab'
+      });
+    }));
     return { action: 'deny' };
   });
   wc.on('will-attach-webview', (event) => event.preventDefault());
@@ -490,7 +508,7 @@ function navigate(tab, url) {
   tab.error = '';
   updateView(tab === activeTab());
   void tab.view.webContents.loadURL(url).catch((error) => {
-    if (error.code === 'ERR_ABORTED' || !tabs.includes(tab) || tab.url !== url || tab.error) return;
+    if (error.code === 'ERR_ABORTED' || !workspaceState(tab.workspaceId).tabs.includes(tab) || tab.url !== url || tab.error) return;
     tab.error = error.code || 'The page could not be loaded.';
     updateView();
     broadcast();
@@ -499,12 +517,19 @@ function navigate(tab, url) {
   saveSoon();
 }
 
-function selectTab(tab, focus = true) {
-  const changed = activeTabId !== tab.id;
+function selectWorkspace(workspaceId, tabId) {
+  const workspace = workspaceState(workspaceId);
+  if (!workspace) throw new Error('This workspace no longer exists.');
+  const previousTab = activeTab();
+  const switched = workspaceId !== profile.data.activeWorkspaceId;
+  if (switched) pendingSearch = undefined;
+  profile.data.activeWorkspaceId = workspaceId;
+  if (tabId !== undefined) workspace.activeTabId = tabId;
+  const tab = activeTab();
+  const changed = switched || tab !== previousTab;
   if (changed) lastPassPopup.close();
-  activeTabId = tab.id;
-  if (tab.url && !tab.view && !tab.error) navigate(tab, tab.url);
-  updateView(focus);
+  if (tab?.url && !tab.view && !tab.error) navigate(tab, tab.url);
+  updateView(true);
   if (changed && extensions.getStoreExtension(LASTPASS_ID)) {
     const current = chromeTab(tab);
     if (current) emitLastPass('tabs.onActivated', [{ tabId: current.id, windowId: current.windowId }]);
@@ -513,32 +538,67 @@ function selectTab(tab, focus = true) {
   saveSoon();
 }
 
-function addTab(url = '', { activate = true, pinned = false, lazy = false } = {}) {
-  if (tabs.length >= MAX_TABS) throw new Error('Close a tab before opening another.');
-  const tab = { id: randomUUID(), title: 'New tab', url: '', error: '', pinned };
+function selectTab(tab) {
+  selectWorkspace(tab.workspaceId, tab.id);
+}
+
+function createWorkspace(name) {
+  const workspace = { id: randomUUID(), name: workspaceName(name) };
+  profile.data.workspaces.push(workspace);
+  workspaceStates.set(workspace.id, { tabs: [], activeTabId: null });
+  selectWorkspace(workspace.id);
+  return { ...workspace };
+}
+
+function renameWorkspace(workspaceId, name) {
+  const workspace = profile.data.workspaces.find(({ id }) => id === workspaceId);
+  if (!workspace) throw new Error('This workspace no longer exists.');
+  workspace.name = workspaceName(name);
+  broadcast();
+  saveSoon();
+  return { ...workspace };
+}
+
+function insertTab(tabs, tab) {
   const firstUnpinned = tabs.findIndex((item) => !item.pinned);
-  if (pinned && firstUnpinned !== -1) tabs.splice(firstUnpinned, 0, tab);
+  if (tab.pinned && firstUnpinned !== -1) tabs.splice(firstUnpinned, 0, tab);
   else tabs.push(tab);
+}
+
+function addTab(url = '', { activate = true, pinned = false, lazy = false, workspaceId = profile.data.activeWorkspaceId } = {}) {
+  if (allTabs().length >= MAX_TABS) throw new Error('Close a tab before opening another.');
+  const workspace = workspaceState(workspaceId);
+  const tab = { id: randomUUID(), workspaceId, title: 'New tab', url: '', error: '', pinned };
+  insertTab(workspace.tabs, tab);
   if (url && lazy) Object.assign(tab, { url, title: new URL(url).hostname });
   else if (url) navigate(tab, url);
   if (activate) selectTab(tab);
-  else broadcast();
+  else {
+    workspace.activeTabId ??= tab.id;
+    broadcast();
+    saveSoon();
+  }
   return tab;
 }
 
 function closeTab(tab, remember = true) {
+  const workspace = workspaceState(tab.workspaceId);
+  const { tabs } = workspace;
   const index = tabs.indexOf(tab);
   if (index === -1) return;
+  if (tab === activeTab()) lastPassPopup.close();
   if (pendingSearch?.tabId === tab.id) pendingSearch = undefined;
   if (remember && webURL(tab.url)) {
-    closedTabs.unshift({ url: tab.url, pinned: tab.pinned });
+    closedTabs.unshift({ workspaceId: tab.workspaceId, url: tab.url, pinned: tab.pinned });
     closedTabs.length = Math.min(closedTabs.length, 25);
   }
   tabs.splice(index, 1);
-  if (tab.id === activeTabId) {
-    const next = tabs[Math.min(index, tabs.length - 1)];
-    if (next) selectTab(next);
-    else addTab();
+  if (tab.id === workspace.activeTabId) {
+    const nextId = tabs[Math.min(index, tabs.length - 1)]?.id ?? null;
+    if (tab.workspaceId === profile.data.activeWorkspaceId) {
+      if (nextId) selectWorkspace(tab.workspaceId, nextId);
+      else addTab();
+    } else workspace.activeTabId = nextId;
   }
   releaseExtensionTab(tab.view);
   tab.view?.webContents.close();
@@ -555,6 +615,7 @@ function releaseExtensionTab(view) {
 
 function pinTab(tab, pinned = !tab.pinned) {
   if (tab.pinned === pinned) return;
+  const { tabs } = workspaceState(tab.workspaceId);
   tabs.splice(tabs.indexOf(tab), 1);
   tab.pinned = pinned;
   const boundary = tabs.findIndex((item) => !item.pinned);
@@ -563,6 +624,7 @@ function pinTab(tab, pinned = !tab.pinned) {
 }
 
 function moveTab(tab, index) {
+  const { tabs } = workspaceState(tab.workspaceId);
   tabs.splice(tabs.indexOf(tab), 1);
   const firstUnpinned = tabs.findIndex((item) => !item.pinned);
   const boundary = firstUnpinned === -1 ? tabs.length : firstUnpinned;
@@ -572,13 +634,55 @@ function moveTab(tab, index) {
   return { index: tabs.indexOf(tab) };
 }
 
-function goHome(tab) {
+function moveTabToWorkspace(tab, workspaceId) {
+  const destination = workspaceStates.get(workspaceId);
+  if (!destination) throw new Error('This workspace no longer exists.');
+  if (workspaceId !== tab.workspaceId) {
+    if (tab === activeTab()) lastPassPopup.close();
+    if (pendingSearch?.tabId === tab.id) pendingSearch = undefined;
+    const sourceId = tab.workspaceId;
+    const source = workspaceState(sourceId);
+    const index = source.tabs.indexOf(tab);
+    source.tabs.splice(index, 1);
+    tab.workspaceId = workspaceId;
+    insertTab(destination.tabs, tab);
+    if (source.activeTabId === tab.id) {
+      const nextId = source.tabs[Math.min(index, source.tabs.length - 1)]?.id ?? null;
+      if (sourceId === profile.data.activeWorkspaceId) selectWorkspace(sourceId, nextId);
+      else source.activeTabId = nextId;
+    }
+    if (!destination.activeTabId) {
+      if (workspaceId === profile.data.activeWorkspaceId) selectWorkspace(workspaceId, tab.id);
+      else destination.activeTabId = tab.id;
+    }
+    broadcast();
+    saveSoon();
+  }
+  return { tabId: tab.id, workspaceId };
+}
+
+function reopenTab() {
+  const index = closedTabs.findIndex((tab) => tab.workspaceId === profile.data.activeWorkspaceId);
+  if (index === -1) return;
+  const { url, pinned } = closedTabs[index];
+  addTab(url, { pinned });
+  closedTabs.splice(index, 1);
+}
+
+function goHome() {
+  const tab = activeTab();
   const home = profile.data.preferences.homepage;
+  if (!tab) return addTab(home);
   if (home) return navigate(tab, home);
-  if (tab === activeTab()) lastPassPopup.close();
+  resetTabToStartPage(tab);
+}
+
+function resetTabToStartPage(tab) {
+  const active = tab === activeTab();
+  if (active) lastPassPopup.close();
   const view = tab.view;
   Object.assign(tab, { view: undefined, url: '', title: 'New tab', error: '' });
-  updateView(true);
+  updateView(active);
   releaseExtensionTab(view);
   view?.webContents.close();
   saveSoon();
@@ -635,8 +739,8 @@ function configurePermissions(ses) {
   ses.setDevicePermissionHandler(() => false);
 }
 
-function requireTab(id = activeTabId) {
-  const tab = tabs.find((item) => item.id === id);
+function requireTab(id = workspaceState().activeTabId) {
+  const tab = allTabs().find((item) => item.id === id);
   if (!tab) throw new Error('This tab is no longer open.');
   return tab;
 }
@@ -761,10 +865,12 @@ function currentStoreListing() {
 }
 
 async function openLastPassPopup(anchor) {
+  const workspaceId = profile.data.activeWorkspaceId;
   const active = activeTab();
   const url = active?.url;
   const page = await extensions.prepareOpen(LASTPASS_ID);
-  if (!page || !extensions.getStoreExtension(LASTPASS_ID) || active !== activeTab() || url !== active?.url) return false;
+  if (!page || !extensions.getStoreExtension(LASTPASS_ID) || workspaceId !== profile.data.activeWorkspaceId ||
+      active !== activeTab() || url !== active?.url) return false;
   const tab = chromeTab(active);
   const action = lastPassApi.getAction(tab?.id);
   if (!action?.enabled) return false;
@@ -785,7 +891,7 @@ function openAddress(input, tab) {
   const address = classifyAddress(input);
   if (address.kind === 'url') return openResolvedAddress(address.url, tab);
   if (profile.data.searchProviderChosen) return openResolvedAddress(searchURL(address.query, profile.data.preferences.searchEngine), tab);
-  if (!tab && tabs.length >= MAX_TABS) throw new Error('Close a tab before opening another.');
+  if (!tab && allTabs().length >= MAX_TABS) throw new Error('Close a tab before opening another.');
 
   pendingSearch = { id: randomUUID(), query: address.query, tabId: tab?.id };
   updateView(true);
@@ -796,7 +902,7 @@ function chooseSearchProvider({ id, engine }) {
   if (!pendingSearch || pendingSearch.id !== id) throw new Error('This search is no longer waiting.');
   const search = pendingSearch;
   const tab = search.tabId ? requireTab(search.tabId) : undefined;
-  if (!tab && tabs.length >= MAX_TABS) throw new Error('Close a tab before opening another.');
+  if (!tab && allTabs().length >= MAX_TABS) throw new Error('Close a tab before opening another.');
   updatePreferences({ searchEngine: engine });
   pendingSearch = undefined;
   return openResolvedAddress(searchURL(search.query, engine), tab);
@@ -807,11 +913,15 @@ async function runAction(name, p = {}) {
   const wc = activeTab()?.view?.webContents;
   switch (name) {
     case 'newTab': return p.input ? openAddress(p.input) : { id: addTab().id };
+    case 'createWorkspace': return createWorkspace(p.name);
+    case 'selectWorkspace': return selectWorkspace(p.workspaceId);
+    case 'renameWorkspace': return renameWorkspace(p.workspaceId, p.name);
+    case 'moveTabToWorkspace': return moveTabToWorkspace(requireTab(p.tabId), p.workspaceId);
     case 'selectTab': selectTab(requireTab(p.id)); break;
     case 'closeTab': closeTab(requireTab(p.id)); break;
     case 'duplicateTab': {
       const tab = requireTab(p.id);
-      return { id: addTab(tab.url, { pinned: tab.pinned }).id };
+      return { id: addTab(tab.url, { pinned: tab.pinned, workspaceId: tab.workspaceId }).id };
     }
     case 'moveTab': return moveTab(requireTab(p.id), p.index);
     case 'pinTab': pinTab(requireTab(p.id), p.pinned); break;
@@ -831,18 +941,14 @@ async function runAction(name, p = {}) {
     case 'back': if (wc?.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); break;
     case 'forward': if (wc?.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); break;
     case 'reload': {
-      const tab = requireTab();
+      const tab = activeTab();
       if (wc?.isLoading()) wc.stop();
-      else if (tab.error && tab.url) navigate(tab, tab.url);
+      else if (tab?.error && tab.url) navigate(tab, tab.url);
       else wc?.reload();
       break;
     }
-    case 'home': goHome(requireTab()); break;
-    case 'reopenTab': {
-      const last = closedTabs[0];
-      if (last) { addTab(last.url, { pinned: last.pinned }); closedTabs.shift(); }
-      break;
-    }
+    case 'home': goHome(); break;
+    case 'reopenTab': reopenTab(); break;
     case 'preferences': return updatePreferences(p);
     case 'customization': return patchCustomization(p);
     case 'resetCustomization': return resetCustomization();
@@ -869,7 +975,7 @@ async function runAction(name, p = {}) {
       return extensions.installFromStore(id);
     }
     case 'removeExtension': {
-      for (const tab of tabs.slice()) {
+      for (const tab of allTabs()) {
         if (extensionPage(tab.url) && new URL(tab.url).hostname === p.id) closeTab(tab, false);
       }
       const removed = await extensions.remove(p.id);
@@ -994,7 +1100,7 @@ function installShortcuts(wc) {
     if (input.alt && !input.control) {
       if (key === 'arrowleft') work = () => activeTab()?.view?.webContents.navigationHistory.goBack();
       if (key === 'arrowright') work = () => activeTab()?.view?.webContents.navigationHistory.goForward();
-      if (key === 'home') work = () => { goHome(requireTab()); broadcast(); };
+      if (key === 'home') work = () => { goHome(); broadcast(); };
     }
     if (input.control && !input.alt) {
       const commands = input.shift ? { a: 'toggleAgent', o: 'showBookmarks', u: 'showCustomization' } : {
@@ -1002,19 +1108,22 @@ function installShortcuts(wc) {
         '=': 'zoomIn', '+': 'zoomIn', '-': 'zoomOut', 0: 'zoomReset'
       };
       if (Object.hasOwn(commands, key)) work = () => { win.webContents.focus(); send('relay:command', commands[key]); };
-      if (key === 't') work = input.shift ? () => {
-        const last = closedTabs[0];
-        if (last) { addTab(last.url, { pinned: last.pinned }); closedTabs.shift(); }
-      } : () => { addTab(); send('relay:command', 'focusAddress'); };
-      if (!input.shift && key === 'w') work = () => closeTab(requireTab());
+      if (key === 't') work = input.shift ? reopenTab : () => { addTab(); send('relay:command', 'focusAddress'); };
+      if (!input.shift && key === 'w') work = () => {
+        const tab = activeTab();
+        if (tab) closeTab(tab);
+      };
       if (!input.shift && key === 'd') work = () => { toggleBookmark(requireTab()); broadcast(); };
       if (!input.shift && key === 'p') work = () => activeTab()?.view?.webContents.print();
       if (!input.shift && key === 'r') work = () => activeTab()?.view?.webContents.reload();
       if (key === 'tab') work = () => {
+        const { tabs } = workspaceState();
+        if (!tabs.length) return;
         const index = tabs.indexOf(activeTab());
         selectTab(tabs[(index + (input.shift ? -1 : 1) + tabs.length) % tabs.length]);
       };
       if (!input.shift && /^[1-9]$/.test(key)) work = () => {
+        const { tabs } = workspaceState();
         const target = key === '9' ? tabs.at(-1) : tabs[Number(key) - 1];
         if (target) selectTab(target);
       };
@@ -1051,6 +1160,7 @@ async function launch() {
   Menu.setApplicationMenu(null);
   const userData = app.getPath('userData');
   profile = createProfile(userData);
+  for (const { id } of profile.data.workspaces) workspaceStates.set(id, { tabs: [], activeTabId: null });
   profile.data.downloads = profile.data.downloads.map((item) => item.state === 'progressing' ? { ...item, state: 'interrupted' } : item);
   discoveryPath = path.join(userData, 'agent-connection.json');
   agent = createAgentBridge({
@@ -1124,17 +1234,15 @@ async function launch() {
     try { saveProfile(); } catch (error) { console.error('Closing Relay profile:', error); }
   });
   win.on('closed', () => {
-    for (const tab of tabs) tab.view?.webContents.close();
+    for (const tab of allTabs()) tab.view?.webContents.close();
     win = undefined;
   });
-  let previousTab;
   for (const item of profile.data.lastSession) {
-    if (!item || (item.url && !webURL(item.url))) continue;
-    const tab = addTab(item.url || '', { activate: false, pinned: item.pinned === true, lazy: true });
-    if (item.active) previousTab = tab;
+    const { url, pinned, workspaceId } = item;
+    const tab = addTab(url, { activate: false, pinned, lazy: true, workspaceId });
+    if (item.active) workspaceState(workspaceId).activeTabId = tab.id;
   }
-  if (tabs.length) selectTab(previousTab ?? tabs[0]);
-  else addTab(profile.data.preferences.homepage);
+  selectWorkspace(profile.data.activeWorkspaceId);
   await win.loadURL(APP_URL);
   win.show();
   void providerConnections.refresh();

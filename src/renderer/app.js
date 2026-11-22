@@ -16,6 +16,12 @@
   const findCount = get('findCount');
   const topTabs = get('topTabs');
   const sideTabs = get('sideTabs');
+  const workspaceCurrent = get('workspaceCurrent');
+  const workspaceBreadcrumbs = get('workspaceBreadcrumbs');
+  const workspaceFooter = get('workspaceFooter');
+  const workspacePopover = get('workspacePopover');
+  const workspaceName = get('workspaceName');
+  const workspaceNameSubmit = get('workspaceNameSubmit');
   const bookmarkBar = get('bookmarkBar');
   const notice = get('notice');
   const storeStrip = get('storeStrip');
@@ -49,6 +55,7 @@
     downloads: ['Downloads', 'download', renderDownloads],
     extensions: ['Extensions', 'extensions', renderExtensions],
     menu: ['Browser menu', 'menu', renderMenu],
+    workspaces: ['Workspaces', 'workspaces', renderWorkspacesPanel],
     tab: ['Tab actions', 'tab-top', renderTabPanel],
   };
 
@@ -57,6 +64,8 @@
   let panelTrigger = null;
   let contextTabId = null;
   let panelSnapshot;
+  let workspaceSnapshot;
+  let workspaceEditor;
   let tabSnapshot;
   let lastTabId;
   let bookmarkSnapshot;
@@ -179,6 +188,7 @@
     errorPage.hidden = !active?.error;
     get('errorDescription').textContent = active?.error || '';
     renderTabs(tabChanged);
+    renderWorkspaceSwitcher();
     applyCustomization();
     renderBookmarkBar();
     renderStoreStrip();
@@ -236,6 +246,75 @@
     });
   }
 
+  function renderWorkspaceSwitcher() {
+    const previousWorkspaceId = workspaceBreadcrumbs.querySelector('[aria-current="true"]')?.dataset.workspaceId;
+    const snapshot = JSON.stringify(state.workspaces);
+    const workspacesChanged = snapshot !== workspaceSnapshot;
+    if (workspacesChanged) {
+      workspaceSnapshot = snapshot;
+      const remaining = new Map(Array.from(workspaceBreadcrumbs.children, (button) => [button.dataset.workspaceId, button]));
+      for (const [index, { id, name }] of state.workspaces.entries()) {
+        const button = remaining.get(id) || createWorkspaceBreadcrumb(id);
+        remaining.delete(id);
+        button.title = name;
+        button.setAttribute('aria-label', name);
+        const atIndex = workspaceBreadcrumbs.children[index];
+        if (button !== atIndex) workspaceBreadcrumbs.insertBefore(button, atIndex || null);
+      }
+      for (const button of remaining.values()) button.remove();
+    }
+    const active = state.workspaces.find(({ id }) => id === state.activeWorkspaceId);
+    if (workspaceCurrent.textContent !== active?.name) {
+      workspaceCurrent.textContent = active?.name || '';
+      workspaceCurrent.title = active?.name || '';
+    }
+    const next = nextWorkspace();
+    if (active && next && active.id !== next.id) {
+      workspaceCurrent.setAttribute('aria-label', active.name + '. Switch to ' + next.name);
+    } else {
+      workspaceCurrent.removeAttribute('aria-label');
+    }
+    for (const button of workspaceBreadcrumbs.children) {
+      if (button.dataset.workspaceId === state.activeWorkspaceId) button.setAttribute('aria-current', 'true');
+      else button.removeAttribute('aria-current');
+    }
+    if (workspacesChanged || previousWorkspaceId !== state.activeWorkspaceId) {
+      scrollActiveBreadcrumbIntoView();
+    }
+  }
+
+  function createWorkspaceBreadcrumb(id) {
+    const button = node('button', 'workspace-crumb');
+    button.type = 'button';
+    button.dataset.workspaceId = id;
+    button.addEventListener('click', () => switchWorkspace(id));
+    button.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      showWorkspaceEditor('rename', button, id);
+    });
+    return button;
+  }
+
+  function scrollActiveBreadcrumbIntoView() {
+    const button = workspaceBreadcrumbs.querySelector('[aria-current="true"]');
+    if (!button || sideTabs.hidden) return;
+    const { left, right } = button.getBoundingClientRect();
+    const strip = workspaceBreadcrumbs.getBoundingClientRect();
+    if (left < strip.left) workspaceBreadcrumbs.scrollLeft += left - strip.left;
+    else if (right > strip.right) workspaceBreadcrumbs.scrollLeft += right - strip.right;
+  }
+
+  function nextWorkspace() {
+    const current = state.workspaces.findIndex(({ id }) => id === state.activeWorkspaceId);
+    return state.workspaces[(current + 1) % state.workspaces.length];
+  }
+
+  function switchWorkspace(workspaceId) {
+    if (state && workspaceId && workspaceId !== state.activeWorkspaceId) {
+      run('selectWorkspace', { workspaceId });
+    }
+  }
+
   function renderTabs(tabChanged) {
     const side = state.preferences.tabPosition !== 'top';
     const parent = side ? sideTabs : topTabs;
@@ -244,7 +323,7 @@
     sideTabs.hidden = !side;
     tabStrip.setAttribute('aria-orientation', side ? 'vertical' : 'horizontal');
     if (moved) {
-      if (side) sideTabs.append(tabStrip);
+      if (side) sideTabs.insertBefore(tabStrip, workspaceFooter);
       else topTabs.prepend(tabStrip);
     }
 
@@ -364,6 +443,7 @@
     if (viewportFrame) return;
     viewportFrame = requestAnimationFrame(() => {
       viewportFrame = 0;
+      positionWorkspacePopover();
       const active = activeTab();
       const rect = page.getBoundingClientRect();
       const frame = workspaceFrame.getBoundingClientRect();
@@ -563,6 +643,7 @@
 
   function showPanel(name, trigger) {
     if (!panels[name] || !state) return;
+    closeWorkspaceEditor();
     if (trigger && !panel.contains(trigger)) panelTrigger = trigger;
     if (!trigger && !selectedPanel) panelTrigger = document.activeElement;
     if (name === 'agent' && selectedPanel !== 'agent') agentAdvancedOpen = false;
@@ -583,6 +664,7 @@
 
   function closePanel(restoreFocus = true) {
     if (!selectedPanel) return;
+    if (workspaceEditor && !sideTabs.contains(workspaceEditor.trigger)) closeWorkspaceEditor();
     panel.hidden = true;
     selectedPanel = null;
     panelSnapshot = null;
@@ -637,7 +719,8 @@
       case 'history': return state.history;
       case 'downloads': return state.downloads;
       case 'extensions': return [state.extensions, state.storeListing, pendingStoreInstalls.has(state.storeListing?.id)];
-      case 'tab': return state.tabs.find((tab) => tab.id === contextTabId);
+      case 'workspaces': return [state.workspaces, state.activeWorkspaceId];
+      case 'tab': return [state.tabs.find((tab) => tab.id === contextTabId), state.workspaces, state.activeWorkspaceId];
       case 'menu': return [activeTab()?.zoomFactor, state.fullScreen, currentCustomization().buttons];
       default: return null;
     }
@@ -1144,6 +1227,66 @@
     return element;
   }
 
+  function showWorkspaceEditor(mode, trigger, workspaceId = state?.activeWorkspaceId) {
+    if (!state) return;
+    closeWorkspaceEditor();
+    const creating = mode === 'create';
+    workspaceEditor = { mode, workspaceId, trigger };
+    get('workspacePopoverHeading').textContent = creating ? 'New workspace' : 'Rename workspace';
+    workspaceName.value = creating ? '' : state.workspaces.find(({ id }) => id === workspaceId)?.name || '';
+    workspaceNameSubmit.textContent = creating ? 'Create' : 'Save';
+    workspaceNameSubmit.disabled = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    workspacePopover.showPopover({ source: trigger });
+    positionWorkspacePopover();
+    workspaceName.focus({ preventScroll: true });
+    workspaceName.select();
+  }
+
+  function positionWorkspacePopover() {
+    if (!workspaceEditor) return;
+    const originalTrigger = workspaceEditor.trigger;
+    const trigger = originalTrigger.isConnected ? originalTrigger : get(originalTrigger.id);
+    if (!trigger?.getClientRects().length) return closeWorkspaceEditor();
+
+    const region = sideTabs.contains(trigger) ? sideTabs : panel;
+    const bounds = region.getBoundingClientRect();
+    const anchor = trigger.getBoundingClientRect();
+    const width = Math.min(222, bounds.width - 16);
+    workspacePopover.style.width = width + 'px';
+    workspacePopover.style.left = bounds.left + (bounds.width - width) / 2 + 'px';
+    const height = workspacePopover.offsetHeight;
+    const top = anchor.bottom + height + 14 <= bounds.bottom ? anchor.bottom + 6 : anchor.top - height - 6;
+    workspacePopover.style.top = Math.max(bounds.top + 8, top) + 'px';
+  }
+
+  function closeWorkspaceEditor(restoreFocus = false) {
+    const trigger = workspaceEditor?.trigger;
+    if (!trigger) return;
+    workspacePopover.hidePopover();
+    if (restoreFocus) {
+      (trigger.isConnected ? trigger : get(trigger.id))?.focus({ preventScroll: true });
+    }
+  }
+
+  function renderWorkspacesPanel() {
+    const entries = state.workspaces.map(({ id, name }) => {
+      const button = menuEntry(name, 'folder', async () => {
+        if (id === state.activeWorkspaceId || await run('selectWorkspace', { workspaceId: id })) {
+          if (selectedPanel === 'workspaces') closePanel();
+        }
+      });
+      button.classList.add('workspace-entry');
+      if (id === state.activeWorkspaceId) button.setAttribute('aria-current', 'true');
+      return button;
+    });
+    const add = textButton('New workspace', (event) => showWorkspaceEditor('create', event.currentTarget), 'primary-button', 'plus');
+    add.id = 'managerAddWorkspace';
+    const rename = textButton('Rename current', (event) => showWorkspaceEditor('rename', event.currentTarget), 'secondary-button', 'edit');
+    rename.id = 'managerRenameWorkspace';
+    return stack(list(entries), group(add, rename));
+  }
+
   function renderMenu() {
     const zoom = node('div', 'zoom-row');
     const factor = activeTab()?.zoomFactor || 1;
@@ -1155,6 +1298,7 @@
       list([
         menuEntry('New tab', 'plus', () => { closePanel(false); createTab(); }, 'Ctrl+T'),
         menuEntry('Reopen closed tab', 'return', () => run('reopenTab'), 'Ctrl+Shift+T'),
+        menuEntry('Workspaces', 'workspaces', () => showPanel('workspaces')),
         menuEntry('Bookmarks', 'star', () => showPanel('bookmarks'), 'Ctrl+Shift+O'),
         menuEntry('History', 'history', () => showPanel('history'), 'Ctrl+H'),
         menuEntry('Downloads', 'download', () => showPanel('downloads'), 'Ctrl+J'),
@@ -1172,12 +1316,27 @@
   function renderTabPanel() {
     const tab = state.tabs.find((record) => record.id === contextTabId);
     if (!tab) return empty('tab-top', 'Tab closed', 'Choose a tab to see its actions.');
-    return stack(section(tab.title || 'New tab', list([
+    const actions = section(tab.title || 'New tab', list([
       menuEntry(tab.pinned ? 'Unpin tab' : 'Pin tab', 'pin', () => run('pinTab', { id: tab.id })),
       menuEntry(tab.muted ? 'Unmute tab' : 'Mute tab', tab.muted ? 'audio' : 'mute',
         () => run('muteTab', { id: tab.id })),
       menuEntry('Close tab', 'close', () => { closePanel(false); run('closeTab', { id: tab.id }); }),
-    ])));
+    ]));
+    const destinations = state.workspaces.filter(({ id }) => id !== state.activeWorkspaceId);
+    if (!destinations.length) return stack(actions);
+
+    const moves = destinations.map(({ id, name }) => {
+      const button = menuEntry(name, 'folder', async () => {
+        const moved = await run('moveTabToWorkspace', { tabId: tab.id, workspaceId: id });
+        if (!moved || selectedPanel !== 'tab' || contextTabId !== tab.id) return;
+        closePanel(false);
+        const tabButton = tabStrip.querySelector('.active .tab-select');
+        (tabButton || (sideTabs.hidden ? addTopTab : get('addSidebarTab'))).focus({ preventScroll: true });
+      });
+      button.classList.add('workspace-entry');
+      return button;
+    });
+    return stack(actions, section('Move to workspace', list(moves)));
   }
 
   async function navigateForm(event, input, clear = false) {
@@ -1219,6 +1378,38 @@
       lastPassButton.disabled = !state?.lastPassAction?.enabled;
     }
   });
+  workspaceCurrent.addEventListener('click', () => {
+    if (state) switchWorkspace(nextWorkspace()?.id);
+  });
+  workspaceCurrent.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    showWorkspaceEditor('rename', workspaceCurrent);
+  });
+  for (const id of ['addWorkspace', 'addWorkspaceFooter']) {
+    get(id).addEventListener('click', (event) => showWorkspaceEditor('create', event.currentTarget));
+  }
+  get('renameWorkspace').addEventListener('click', (event) => showWorkspaceEditor('rename', event.currentTarget));
+  workspacePopover.addEventListener('beforetoggle', (event) => {
+    if (event.newState !== 'closed') return;
+    workspaceEditor?.trigger.removeAttribute('aria-expanded');
+    workspaceEditor = null;
+  });
+  get('workspaceNameCancel').addEventListener('click', () => closeWorkspaceEditor(true));
+  get('workspaceNameForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const editor = workspaceEditor;
+    if (!editor || workspaceNameSubmit.disabled) return;
+    const name = workspaceName.value.trim();
+    workspaceNameSubmit.disabled = true;
+    const saved = editor.mode === 'create'
+      ? await run('createWorkspace', { name })
+      : await run('renameWorkspace', { workspaceId: editor.workspaceId, name });
+    if (workspaceEditor !== editor) return;
+    workspaceNameSubmit.disabled = false;
+    if (saved) closeWorkspaceEditor(true);
+  });
+  panelBody.addEventListener('scroll', positionWorkspacePopover, { passive: true });
+  window.addEventListener('blur', () => closeWorkspaceEditor());
   get('addressForm').addEventListener('submit', (event) => navigateForm(event, address));
   get('startForm').addEventListener('submit', (event) => navigateForm(event, get('startSearch'), true));
   findBar.addEventListener('submit', (event) => {
@@ -1252,7 +1443,10 @@
 
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || searchDialog.open) return;
-    if (!findBar.hidden) closeFind();
+    if (workspaceEditor) {
+      event.preventDefault();
+      closeWorkspaceEditor(true);
+    } else if (!findBar.hidden) closeFind();
     else if (selectedPanel) closePanel();
     else if (document.activeElement === address) {
       address.value = activeTab()?.url || '';
@@ -1264,6 +1458,7 @@
     const resize = new ResizeObserver(scheduleViewport);
     resize.observe(page);
     resize.observe(workspaceFrame);
+    new ResizeObserver(scrollActiveBreadcrumbIntoView).observe(workspaceBreadcrumbs);
     window.addEventListener('resize', scheduleViewport);
     let receivedState = false;
     relay.onState((update) => {
