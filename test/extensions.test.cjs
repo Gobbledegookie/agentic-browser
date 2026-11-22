@@ -4,23 +4,43 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
-const { createExtensionManager, storeId, verifyStorePackage } = require('../src/extensions.cjs');
+const { createExtensionManager, storeId, storeListingId, verifyStorePackage } = require('../src/extensions.cjs');
 
 const storeExample = 'caacnjeoikecoeepknkbjdcaediamaej';
 
-test('accepts Chrome Web Store IDs and listing URLs', () => {
-  assert.equal(storeId(storeExample), storeExample);
-  assert.equal(
-    storeId('https://chromewebstore.google.com/detail/json-formatter-classic/' + storeExample + '?hl=en'),
-    storeExample,
-  );
-  assert.equal(storeId('https://chrome.google.com/webstore/detail/' + storeExample + '/'), storeExample);
+test('accepts exact current and legacy Chrome Web Store listing paths', () => {
+  for (const url of [
+    'https://chromewebstore.google.com/detail/json-formatter-classic/' + storeExample + '?hl=en',
+    'https://chromewebstore.google.com/detail/' + storeExample + '#details',
+    'https://chromewebstore.google.com/detail/%C3%A9diteur-JSON/' + storeExample,
+    'https://chrome.google.com/webstore/detail/' + storeExample + '/',
+    'https://chrome.google.com/webstore/detail/json-formatter-classic/' + storeExample,
+  ]) {
+    assert.equal(storeListingId(url), storeExample);
+    assert.equal(storeId(url), storeExample);
+  }
+  assert.equal(storeListingId(storeExample), null);
+  assert.equal(storeId(' ' + storeExample + ' '), storeExample);
+});
+
+test('rejects Store lookalikes and nonlisting paths', () => {
   for (const url of [
     'http://chromewebstore.google.com/detail/' + storeExample,
+    'blob:https://chromewebstore.google.com/detail/' + storeExample,
     'https://chromewebstore.google.com.example.com/detail/' + storeExample,
     'https://person@chromewebstore.google.com/detail/' + storeExample,
+    'https://@chromewebstore.google.com/detail/' + storeExample,
+    'https://chromewebstore.google.com:8443/detail/' + storeExample,
     'https://chromewebstore.google.com/search/' + storeExample,
+    'https://chromewebstore.google.com/detail//' + storeExample,
+    'https://chromewebstore.google.com/detail/other/folders/' + storeExample,
+    'https://chromewebstore.google.com/detail/slug/' + storeExample + '/reviews',
+    'https://chromewebstore.google.com/detail/slug%2Fother/' + storeExample,
+    'https://chromewebstore.google.com/user/../detail/' + storeExample,
+    'https://chromewebstore.google.com/detail/%2E/' + storeExample,
+    'https://chromewebstore.google.com/detail?extension_id=' + storeExample,
   ]) {
+    assert.equal(storeListingId(url), null, url);
     assert.throws(() => storeId(url), /Chrome Web Store listing URL/);
   }
 });

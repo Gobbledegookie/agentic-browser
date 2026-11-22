@@ -7,10 +7,11 @@ const { mkdir, writeFile } = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { randomUUID } = require('node:crypto');
-const { createProfile, webURL, resolveAddress, MAX_HISTORY } = require('./profile.cjs');
+const { createProfile, webURL, MAX_HISTORY } = require('./profile.cjs');
+const { classifyAddress, searchURL, SEARCH_PROVIDERS } = require('./address.cjs');
 const { createAgentBridge } = require('./agent/bridge.cjs');
 const { validatePreferencesPatch } = require('./agent/preferences.cjs');
-const { createExtensionManager } = require('./extensions.cjs');
+const { createExtensionManager, storeListingId } = require('./extensions.cjs');
 const { listBrowserCommands, validateBrowserCommand } = require('./commands.cjs');
 const { defaultCustomization, updateCustomization, keyboardAccelerator } = require('./customization.cjs');
 const { collectPageText } = require('./page-content.cjs');
@@ -43,6 +44,7 @@ let discoveryPath;
 let activeTabId;
 let visibleView;
 let viewport;
+let pendingSearch;
 let pendingBroadcast = false;
 let saveTimer;
 let closing = false;
@@ -104,6 +106,7 @@ function getBrowserState() {
     }),
     activeTabId,
     preferences: { ...profile.data.preferences },
+    searchProviderChosen: profile.data.searchProviderChosen,
     customization: profile.data.customization,
     bookmarks: profile.data.bookmarks,
     history: profile.data.history,
@@ -124,8 +127,13 @@ function getBrowserState() {
 
 function getState() {
   const mcpPath = app.isPackaged ? path.join(process.resourcesPath, 'agent', 'mcp.cjs') : path.join(__dirname, 'agent', 'mcp.cjs');
+  const browser = getBrowserState();
+  const extensionId = currentStoreListing();
   return {
-    ...getBrowserState(),
+    ...browser,
+    pendingSearch: pendingSearch ? { id: pendingSearch.id, query: pendingSearch.query } : null,
+    searchProviders: SEARCH_PROVIDERS,
+    storeListing: extensionId ? { id: extensionId, installed: browser.extensions.some(({ id }) => id === extensionId) } : null,
     providers: providerConnections.snapshot(),
     agent: { ...agent.status(), mcpCommand: 'node', mcpArgs: [mcpPath], mcpEnv: { RELAY_AGENT_FILE: discoveryPath } }
   };
@@ -134,9 +142,13 @@ function getState() {
 function updatePreferences(patch) {
   if (closing) throw new Error('Relay is closing.');
   const previous = profile.data.preferences;
-  profile.data.preferences = { ...previous, ...validatePreferencesPatch(patch) };
+  const previousChoice = profile.data.searchProviderChosen;
+  const updates = validatePreferencesPatch(patch);
+  profile.data.preferences = { ...previous, ...updates };
+  if (Object.hasOwn(updates, 'searchEngine')) profile.data.searchProviderChosen = true;
   try { saveProfile(); } catch (error) {
     profile.data.preferences = previous;
+    profile.data.searchProviderChosen = previousChoice;
     throw error;
   }
   broadcast();
@@ -177,7 +189,7 @@ function updateView(focus = false) {
   const y = Math.max(0, Math.min(height, Math.round(viewport?.y ?? 0)));
   const w = Math.min(width - x, Math.round(viewport?.width ?? 0));
   const h = Math.min(height - y, Math.round(viewport?.height ?? 0));
-  const target = w > 0 && h > 0 && tab && tab.url && !tab.error ? tab.view : null;
+  const target = !pendingSearch && w > 0 && h > 0 && tab && tab.url && !tab.error ? tab.view : null;
   if (visibleView !== target) {
     if (visibleView) win.contentView.removeChildView(visibleView);
     visibleView = target;
@@ -299,6 +311,7 @@ function attachView(tab) {
 
 function navigate(tab, url) {
   if (!webURL(url) && !extensionPage(url)) throw new Error('This address cannot be opened.');
+  if (pendingSearch?.tabId === tab.id) pendingSearch = undefined;
   attachView(tab);
   tab.url = url;
   tab.title = new URL(url).hostname;
@@ -338,6 +351,7 @@ function addTab(url = '', { activate = true, pinned = false, lazy = false } = {}
 function closeTab(tab, remember = true) {
   const index = tabs.indexOf(tab);
   if (index === -1) return;
+  if (pendingSearch?.tabId === tab.id) pendingSearch = undefined;
   if (remember && webURL(tab.url)) {
     closedTabs.unshift({ url: tab.url, pinned: tab.pinned });
     closedTabs.length = Math.min(closedTabs.length, 25);
@@ -554,11 +568,42 @@ function adjustZoom(factor) {
   activeTab()?.view?.webContents.setZoomFactor(factor);
 }
 
+function currentStoreListing() {
+  return storeListingId(activeTab()?.url);
+}
+
+function openResolvedAddress(url, tab) {
+  if (!tab) return { id: addTab(url).id };
+  navigate(tab, url);
+  return { id: tab.id };
+}
+
+function openAddress(input, tab) {
+  const address = classifyAddress(input);
+  if (address.kind === 'url') return openResolvedAddress(address.url, tab);
+  if (profile.data.searchProviderChosen) return openResolvedAddress(searchURL(address.query, profile.data.preferences.searchEngine), tab);
+  if (!tab && tabs.length >= MAX_TABS) throw new Error('Close a tab before opening another.');
+
+  pendingSearch = { id: randomUUID(), query: address.query, tabId: tab?.id };
+  updateView(true);
+  return { pendingSearch: true };
+}
+
+function chooseSearchProvider({ id, engine }) {
+  if (!pendingSearch || pendingSearch.id !== id) throw new Error('This search is no longer waiting.');
+  const search = pendingSearch;
+  const tab = search.tabId ? requireTab(search.tabId) : undefined;
+  if (!tab && tabs.length >= MAX_TABS) throw new Error('Close a tab before opening another.');
+  updatePreferences({ searchEngine: engine });
+  pendingSearch = undefined;
+  return openResolvedAddress(searchURL(search.query, engine), tab);
+}
+
 async function runAction(name, p = {}) {
   if (closing) throw new Error('Relay is closing.');
   const wc = activeTab()?.view?.webContents;
   switch (name) {
-    case 'newTab': return { id: addTab(p.input ? resolveAddress(p.input, profile.data.preferences.searchEngine) : '').id };
+    case 'newTab': return p.input ? openAddress(p.input) : { id: addTab().id };
     case 'selectTab': selectTab(requireTab(p.id)); break;
     case 'closeTab': closeTab(requireTab(p.id)); break;
     case 'duplicateTab': {
@@ -572,7 +617,14 @@ async function runAction(name, p = {}) {
       if (target) target.setAudioMuted(p.muted ?? !target.isAudioMuted());
       break;
     }
-    case 'navigate': navigate(requireTab(), resolveAddress(p.input, profile.data.preferences.searchEngine)); break;
+    case 'navigate': return openAddress(p.input, activeTab());
+    case 'chooseSearchProvider': return chooseSearchProvider(p);
+    case 'cancelSearchProvider':
+      if (pendingSearch?.id === p.id) {
+        pendingSearch = undefined;
+        updateView();
+      }
+      break;
     case 'back': if (wc?.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); break;
     case 'forward': if (wc?.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); break;
     case 'reload': {
@@ -608,6 +660,11 @@ async function runAction(name, p = {}) {
       return { revoked: sitePermissions.delete(permissionKey(p.permission, p.origin)) };
     case 'loadExtension': return extensions.loadUnpacked();
     case 'installExtension': return extensions.installFromStore(p.input);
+    case 'installStoreListing': {
+      const id = currentStoreListing();
+      if (!id || p.id !== id) throw new Error('Open the extension’s Chrome Web Store listing to install it.');
+      return extensions.installFromStore(id);
+    }
     case 'removeExtension': {
       for (const tab of tabs.slice()) {
         if (extensionPage(tab.url) && new URL(tab.url).hostname === p.id) closeTab(tab, false);
@@ -707,7 +764,7 @@ function attempt(work) {
 
 function installShortcuts(wc) {
   wc.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown' || input.isComposing || input.meta) return;
+    if (pendingSearch || input.type !== 'keyDown' || input.isComposing || input.meta) return;
     const keyBinding = keyboardAccelerator(input);
     const shortcut = profile.data.customization.shortcuts.find(({ accelerator }) => accelerator.toLowerCase() === keyBinding);
     if (shortcut) {

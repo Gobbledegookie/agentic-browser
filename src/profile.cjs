@@ -3,7 +3,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { DEFAULT_PREFERENCES, validatePreferencesPatch } = require('./agent/preferences.cjs');
 const { defaultCustomization, updateCustomization } = require('./customization.cjs');
-const { webURL, resolveAddress } = require('./address.cjs');
+const { webURL, resolveAddress, SEARCH_PROVIDERS } = require('./address.cjs');
 
 const MAX_HISTORY = 500;
 const AGENT_ACCESS_VERSION = 2;
@@ -38,6 +38,7 @@ function createProfile(dataPath) {
   }
   const data = {
     preferences,
+    searchProviderChosen: saved.searchProviderChosen === true && SEARCH_PROVIDERS.some(({ id }) => id === saved.preferences?.searchEngine),
     customization,
     agentAccessVersion: AGENT_ACCESS_VERSION,
     agentEnabled: saved.agentEnabled === true && saved.agentAccessVersion === AGENT_ACCESS_VERSION,

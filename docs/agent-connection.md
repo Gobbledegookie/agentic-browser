@@ -65,6 +65,8 @@ Call `list_browser_commands` first when you need to find a browser action or che
 
 For example, to open Wikipedia using `run_browser_command`, pass `{"name":"newTab","arguments":{"input":"https://www.wikipedia.org/"}}`.
 
+Submitting search terms before a provider is chosen can return `{ "pendingSearch": true }` while Relay asks the user to choose a default. The original search opens when the user picks a provider. A request to set `searchEngine` explicitly also sets the default.
+
 ### Browser preferences
 
 | Preference | Accepted values |

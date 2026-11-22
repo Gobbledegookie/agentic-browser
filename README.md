@@ -8,9 +8,9 @@ Download the Windows x64 setup file from the [latest release](https://github.com
 
 ## Browse and customize
 
-- Search or navigate from the address bar. Relay supports tabs, pinning, session restore, bookmarks, history, downloads, find in page, zoom, and fullscreen.
+- Search or navigate from the address bar. On your first search, choose Google, DuckDuckGo, or Bing. Relay remembers your choice and opens your results. Relay also supports tabs, pinning, session restore, bookmarks, history, downloads, find in page, zoom, and fullscreen.
 - Open **Browser menu → Customize Relay** to move tabs to the top, left, or right. You can also set the theme, homepage, search engine, and bookmarks bar.
-- Open **Extensions** to install a compatible Chrome Web Store extension by URL or ID, or load an unpacked extension folder. Relay shows declared permissions before installation. Electron supports a subset of Chrome APIs. Extension updates currently require a manual reinstall. See [extension compatibility](docs/extensions.md).
+- On a Chrome Web Store extension listing, click **Add to Relay** in the browser toolbar. You can also install by URL or ID or load an unpacked folder from **Extensions**. Relay shows declared permissions before installation. Electron supports a subset of Chrome APIs. Extension updates currently require a manual reinstall. See [extension compatibility](docs/extensions.md).
 - Open **Agent** and choose **ChatGPT** or **Claude**. Relay uses the official Codex or Claude Code sign-in and opens the agent with browser access already configured. Ask it to move your tabs, change the interface, or manage browser settings. **Advanced settings** contains manual setup for other clients. See the [agent connection guide](docs/agent-connection.md).
 - Use **Runtime customization** or your agent to apply custom CSS, replace the new tab page, hide built-in controls, add command buttons, and bind keyboard shortcuts. See the [runtime customization guide](docs/customization.md).
 

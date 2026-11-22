@@ -15,21 +15,36 @@ const extractedLimit = 384 * 1024 * 1024;
 // https://chromium.googlesource.com/chromium/src/+/main/components/crx_file/crx_verifier.cc
 const publisherKeyHash = '61f7f2a6bfcf74cd0bc1fe2497cc9b04254c658f79f2145392867ea8366367cf';
 
+function storeListingId(input) {
+  if (typeof input !== 'string' || /[\u0000-\u0020\\]/.test(input)) return null;
+  // Inspect the supplied path before URL parsing can normalize dot segments.
+  const match = /^https:\/\/[^/?#@]+(\/[^?#]*)/i.exec(input);
+  if (!match) return null;
+  const url = URL.parse(input);
+  if (!url || url.username || url.password) return null;
+
+  const prefix = {
+    'https://chromewebstore.google.com': '/detail/',
+    'https://chrome.google.com': '/webstore/detail/'
+  }[url.origin];
+  if (!prefix || !match[1].startsWith(prefix)) return null;
+  const parts = match[1].slice(prefix.length).replace(/\/$/, '').split('/');
+  const id = parts.at(-1);
+  if (parts.length > 2 || !extensionIdPattern.test(id)) return null;
+  if (parts.length === 2) {
+    try {
+      if (!/^[\p{L}\p{M}\p{N}_~-][\p{L}\p{M}\p{N}._~-]*$/u.test(decodeURIComponent(parts[0]))) return null;
+    } catch {
+      return null;
+    }
+  }
+  return id;
+}
+
 function storeId(input) {
   const text = typeof input === 'string' ? input.trim() : '';
-  if (extensionIdPattern.test(text)) return text;
-  try {
-    const url = new URL(text);
-    const pathname = url.pathname.replace(/\/+$/, '');
-    const current = url.origin === 'https://chromewebstore.google.com' && pathname.startsWith('/detail/');
-    const legacy = url.origin === 'https://chrome.google.com' && pathname.startsWith('/webstore/detail/');
-    const id = pathname.split('/').at(-1);
-    if ((current || legacy) && !url.username && !url.password && extensionIdPattern.test(id)) {
-      return id;
-    }
-  } catch {
-    // The shared error also describes the accepted inputs.
-  }
+  const id = extensionIdPattern.test(text) ? text : storeListingId(text);
+  if (id) return id;
   throw new Error('Enter a Chrome Web Store listing URL or a 32-letter Chrome extension ID.');
 }
 
@@ -465,4 +480,4 @@ function createExtensionManager({ browserSession, userData, selectDirectory, con
   return { restore, list, loadUnpacked, installFromStore, remove, getPageUrl };
 }
 
-module.exports = { createExtensionManager, storeId, verifyStorePackage };
+module.exports = { createExtensionManager, storeId, storeListingId, verifyStorePackage };

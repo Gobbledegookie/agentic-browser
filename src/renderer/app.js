@@ -18,6 +18,13 @@
   const sideTabs = get('sideTabs');
   const bookmarkBar = get('bookmarkBar');
   const notice = get('notice');
+  const storeStrip = get('storeStrip');
+  const storeAction = get('storeAction');
+  const searchDialog = get('searchProviderDialog');
+  const searchOptions = get('searchProviderOptions');
+  const searchCancel = get('cancelSearchProvider');
+  const searchError = get('searchProviderError');
+  const pendingStoreInstalls = new Set();
   const shortcuts = new Map([
     ['focusAddress', focusAddress],
     ['showHistory', () => showPanel('history')],
@@ -59,6 +66,8 @@
   let appliedNewTabHtml = '';
   let contributionSnapshot;
   let agentAdvancedOpen = false;
+  let searchPrompt = null;
+  let searchSubmission = null;
 
   const tabStrip = node('div', 'tabs-strip');
   tabStrip.setAttribute('role', 'tablist');
@@ -160,7 +169,9 @@
     renderTabs(tabChanged);
     applyCustomization();
     renderBookmarkBar();
+    renderStoreStrip();
     renderPanel();
+    renderSearchChooser();
     scheduleViewport();
   }
 
@@ -352,7 +363,7 @@
       const top = Math.max(rect.top + inset('Top') * yScale, frame.top);
       const right = Math.min(rect.right - inset('Right') * xScale, frame.right);
       const bottom = Math.min(rect.bottom - inset('Bottom') * yScale, frame.bottom);
-      const visible = active?.url && !active.error;
+      const visible = active?.url && !active.error && !state.pendingSearch;
       const bounds = visible && pageStyle.visibility !== 'hidden' && pageStyle.opacity !== '0'
         ? { x: Math.ceil(left), y: Math.ceil(top), width: Math.max(0, Math.floor(right) - Math.ceil(left)), height: Math.max(0, Math.floor(bottom) - Math.ceil(top)) }
         : { x: 0, y: 0, width: 0, height: 0 };
@@ -363,20 +374,120 @@
     });
   }
 
-  async function run(name, payload, successMessage) {
-    if (!relay) return false;
+  async function request(name, payload, successMessage, onError = (message) => showNotice(message, true)) {
+    if (!relay) return null;
     try {
       const result = await relay.action(name, payload);
       if (!result.ok) {
-        showNotice(result.error || 'The operation could not be completed.', true);
-        return false;
+        onError(result.error || 'The operation could not be completed.');
+        return null;
       }
-      if (result.value === false) return false;
+      if (result.value === false) return null;
       if (successMessage) showNotice(successMessage);
-      return true;
+      return result;
     } catch {
-      showNotice('Relay could not complete this operation.', true);
-      return false;
+      onError('Relay could not complete this operation.');
+      return null;
+    }
+  }
+
+  async function run(name, payload, successMessage) {
+    return Boolean(await request(name, payload, successMessage));
+  }
+
+  function searchProviderOptions() {
+    return state.searchProviders ?? [
+      { id: 'google', label: 'Google' },
+      { id: 'duckduckgo', label: 'DuckDuckGo' },
+      { id: 'bing', label: 'Bing' },
+    ];
+  }
+
+  function renderSearchChooser() {
+    const pending = state.pendingSearch;
+    if (!pending) {
+      if (!searchPrompt) return;
+      const { origin, query, cancelled } = searchPrompt;
+      searchPrompt = null;
+      searchDialog.close();
+
+      if (cancelled) {
+        const field = origin.getClientRects().length ? origin : address;
+        field.value = query;
+        field.focus();
+        field.setSelectionRange(query.length, query.length);
+      } else if (origin !== address) {
+        origin.value = '';
+      }
+      return;
+    }
+    if (searchPrompt?.id === pending.id) return;
+
+    const origin = searchSubmission?.query === pending.query ? searchSubmission.input : address;
+    searchSubmission = null;
+    searchPrompt = { ...pending, origin, cancelled: true, busy: false };
+    get('pendingSearchQuery').textContent = pending.query;
+    searchError.hidden = true;
+    searchCancel.disabled = false;
+    searchOptions.replaceChildren(...searchProviderOptions().map(({ id, label }) => {
+      const option = textButton(label, () => resolveSearchChooser(id), 'search-provider-option');
+      option.dataset.searchEngine = id;
+      option.append(icon('forward'));
+      return option;
+    }));
+    if (!searchDialog.open) searchDialog.showModal();
+    (searchOptions.firstElementChild || searchCancel).focus({ preventScroll: true });
+  }
+
+  async function resolveSearchChooser(engine) {
+    const prompt = searchPrompt;
+    if (!prompt || prompt.busy) return;
+    prompt.busy = true;
+    prompt.cancelled = !engine;
+    searchError.hidden = true;
+    const buttons = [...searchOptions.children, searchCancel];
+    const focused = document.activeElement;
+    for (const button of buttons) button.disabled = true;
+    const action = engine ? 'chooseSearchProvider' : 'cancelSearchProvider';
+    const payload = engine ? { id: prompt.id, engine } : { id: prompt.id };
+    const result = await request(action, payload, undefined, (message) => {
+      if (searchPrompt !== prompt) return;
+      searchError.textContent = message;
+      searchError.hidden = false;
+    });
+    if (!result && searchPrompt === prompt) {
+      prompt.cancelled = true;
+      prompt.busy = false;
+      for (const button of buttons) button.disabled = false;
+      if (focused instanceof HTMLElement) focused.focus({ preventScroll: true });
+    }
+  }
+
+  function renderStoreStrip() {
+    const listing = state.storeListing;
+    storeStrip.hidden = !listing;
+    if (!listing) return;
+
+    const installing = pendingStoreInstalls.has(listing.id);
+    const status = get('storeStatus');
+    status.hidden = !installing && !listing.installed;
+    status.textContent = installing ? 'Preparing installation…' : (listing.installed ? 'Installed in Relay' : '');
+    storeAction.disabled = installing;
+    storeAction.className = listing.installed ? 'secondary-button' : 'primary-button';
+    storeAction.textContent = installing ? 'Installing…' : (listing.installed ? 'Manage extensions' : 'Add to Relay');
+  }
+
+  async function installCurrentStoreListing(id) {
+    if (state.storeListing?.id !== id || state.storeListing.installed || pendingStoreInstalls.has(id)) return;
+    pendingStoreInstalls.add(id);
+    renderStoreStrip();
+    renderPanel();
+    try {
+      await run('installStoreListing', { id }, 'Extension installed.');
+    } finally {
+      pendingStoreInstalls.delete(id);
+      renderStoreStrip();
+      renderPanel();
     }
   }
 
@@ -502,13 +613,13 @@
 
   function panelData() {
     switch (selectedPanel) {
-      case 'settings': return [state.preferences, state.version];
+      case 'settings': return [state.preferences, state.searchProviderChosen, state.version];
       case 'customization': return currentCustomization();
       case 'agent': return [state.agent, state.providers, hasRuntimeCustomization()];
       case 'bookmarks': return state.bookmarks;
       case 'history': return state.history;
       case 'downloads': return state.downloads;
-      case 'extensions': return state.extensions;
+      case 'extensions': return [state.extensions, state.storeListing, pendingStoreInstalls.has(state.storeListing?.id)];
       case 'tab': return state.tabs.find((tab) => tab.id === contextTabId);
       case 'menu': return [activeTab()?.zoomFactor, state.fullScreen, currentCustomization().buttons];
       default: return null;
@@ -609,7 +720,10 @@
     check.addEventListener('change', () => run('preferences', { bookmarksBar: check.checked }));
     bar.append(check, 'Show bookmarks bar');
 
-    const engine = select('engine', [['duckduckgo', 'DuckDuckGo'], ['google', 'Google'], ['bing', 'Bing']], prefs.searchEngine);
+    const engines = searchProviderOptions().map(({ id, label }) => [id, label]);
+    if (!state.searchProviderChosen) engines.unshift(['', 'Choose on first search']);
+    const engine = select('engine', engines, state.searchProviderChosen ? prefs.searchEngine : '');
+    if (!state.searchProviderChosen) engine.options[0].disabled = true;
     engine.addEventListener('change', () => run('preferences', { searchEngine: engine.value }));
     const homepage = input('homepage', prefs.homepage, 'New tab page');
     const form = node('form', 'panel-stack');
@@ -969,9 +1083,21 @@
       return row;
     })) : empty('extensions', 'No extensions installed', 'Add a compatible Chrome extension to get started.');
 
-    return stack(section('Add extension', form,
-      textButton('Browse Chrome Web Store', () => run('newTab', { input: 'https://chromewebstore.google.com/' }), 'text-button', 'external')),
-    section('Installed extensions', manage));
+    const sections = [
+      section('Add extension', form,
+        textButton('Browse Chrome Web Store', () => run('newTab', { input: 'https://chromewebstore.google.com/' }), 'text-button', 'external')),
+      section('Installed extensions', manage),
+    ];
+    const currentListing = state.storeListing;
+    if (currentListing) {
+      const { id, installed } = currentListing;
+      const installing = pendingStoreInstalls.has(id);
+      const attach = textButton(installing ? 'Installing…' : 'Add to Relay', () => installCurrentStoreListing(id), 'primary-button');
+      attach.disabled = installing;
+      sections.unshift(section('Current Chrome Web Store listing',
+        installed ? node('p', '', 'This extension is installed in Relay.') : group(attach)));
+    }
+    return stack(...sections);
   }
 
   function menuEntry(label, iconName, listener, key) {
@@ -1022,13 +1148,31 @@
   async function navigateForm(event, input, clear = false) {
     event.preventDefault();
     const value = input.value.trim();
-    if (value && await run('navigate', { input: value })) {
+    if (!value) return;
+
+    const submission = { input, query: value };
+    searchSubmission = submission;
+    const result = await request('navigate', { input: value });
+    if (result?.value?.pendingSearch) return;
+    if (searchSubmission === submission) searchSubmission = null;
+    if (result) {
       if (clear) input.value = '';
       input.blur();
       address.value = activeTab()?.url || '';
     }
   }
 
+  searchCancel.addEventListener('click', () => resolveSearchChooser());
+  searchDialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    resolveSearchChooser();
+  });
+  storeAction.addEventListener('click', () => {
+    const listing = state?.storeListing;
+    if (!listing) return;
+    if (listing.installed) showPanel('extensions', storeAction);
+    else installCurrentStoreListing(listing.id);
+  });
   get('addressForm').addEventListener('submit', (event) => navigateForm(event, address));
   get('startForm').addEventListener('submit', (event) => navigateForm(event, get('startSearch'), true));
   findBar.addEventListener('submit', (event) => {
@@ -1061,7 +1205,7 @@
   });
 
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || searchDialog.open) return;
     if (!findBar.hidden) closeFind();
     else if (selectedPanel) closePanel();
     else if (document.activeElement === address) {
@@ -1080,7 +1224,9 @@
       receivedState = true;
       applyState(update);
     });
-    relay.onCommand((command) => shortcuts.get(command)?.());
+    relay.onCommand((command) => {
+      if (!searchDialog.open) shortcuts.get(command)?.();
+    });
     relay.onPanel?.((name) => {
       if (name === 'close') closePanel();
       else showPanel(name);

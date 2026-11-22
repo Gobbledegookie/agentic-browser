@@ -108,6 +108,14 @@
       <button class="icon-button" type="button" data-find="close" aria-label="Close find bar" title="Close find bar"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button>
     </form>
   </div>
+  <section id="storeStrip" class="store-strip" aria-label="Chrome Web Store" hidden>
+    <span class="store-strip-icon"><svg class="icon" aria-hidden="true"><use href="#i-store"></use></svg></span>
+    <div class="store-strip-details">
+      <strong>Chrome Web Store extension</strong>
+      <span id="storeStatus" role="status" hidden></span>
+    </div>
+    <button id="storeAction" class="primary-button" type="button">Add to Relay</button>
+  </section>
   <p id="notice" class="notice" role="status" hidden></p>
 
   <div id="workspace" class="workspace">
@@ -178,5 +186,20 @@
       <div class="panel-body-frame"><div id="panelBody" class="panel-body"></div></div>
     </aside>
   </div>
+  <dialog id="searchProviderDialog" class="search-provider-dialog" aria-labelledby="searchProviderTitle" aria-describedby="searchProviderDescription">
+    <header class="search-provider-heading">
+      <span class="search-provider-icon"><svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg></span>
+      <div>
+        <h2 id="searchProviderTitle">Choose a search engine</h2>
+        <p id="searchProviderDescription">Relay will remember your choice. You can change it in settings.</p>
+      </div>
+    </header>
+    <div class="search-provider-query"><span>Search for</span><q id="pendingSearchQuery"></q></div>
+    <div id="searchProviderOptions" class="search-provider-options" role="group" aria-label="Search engines"></div>
+    <p id="searchProviderError" class="search-provider-error" role="alert" hidden></p>
+    <footer class="search-provider-footer">
+      <button id="cancelSearchProvider" class="secondary-button" type="button">Cancel</button>
+    </footer>
+  </dialog>
 </body>
 </html>
