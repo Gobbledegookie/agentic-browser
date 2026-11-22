@@ -5,6 +5,7 @@ const path = require('node:path');
 const { pipeline } = require('node:stream/promises');
 const { setTimeout: delay } = require('node:timers/promises');
 const yauzl = require('yauzl');
+const { LASTPASS_ID } = require('./lastpass-api.cjs');
 
 const extensionIdPattern = /^[a-p]{32}$/;
 const storeOrigins = new Set(['https://clients2.google.com', 'https://clients2.googleusercontent.com']);
@@ -49,7 +50,7 @@ function storeId(input) {
   throw new Error('Enter a Chrome Web Store listing URL or a 32-letter Chrome extension ID.');
 }
 
-async function downloadStorePackage(id, chromeVersion) {
+async function downloadStorePackage(id, chromeVersion, timeout = 45000) {
   let url = new URL('https://clients2.google.com/service/update2/crx');
   url.search = new URLSearchParams({
     response: 'redirect',
@@ -57,7 +58,7 @@ async function downloadStorePackage(id, chromeVersion) {
     acceptformat: 'crx3',
     x: 'id=' + id + '&installsource=ondemand&uc',
   }).toString();
-  const signal = AbortSignal.timeout(45000);
+  const signal = AbortSignal.timeout(timeout);
   for (let redirects = 0; redirects <= 4; redirects++) {
     if (!storeOrigins.has(url.origin) || url.username || url.password) {
       throw new Error('The Chrome Web Store sent an unexpected download address.');
@@ -265,6 +266,38 @@ function permissionDetails(manifest) {
   };
 }
 
+function requestedAccess(manifest) {
+  const required = permissionDetails({
+    permissions: manifest.permissions, host_permissions: manifest.host_permissions, content_scripts: manifest.content_scripts,
+  });
+  const requested = permissionDetails(manifest);
+  return {
+    requiredPermissions: required.permissions, requiredHosts: required.hostPermissions,
+    requestedPermissions: requested.permissions, requestedHosts: requested.hostPermissions,
+  };
+}
+
+function accessWithin(approved, requested) {
+  return Boolean(approved && Object.keys(requested).every(key =>
+    Array.isArray(approved[key]) && requested[key].every(value => approved[key].includes(value))));
+}
+
+function approvalFor(bytes, manifest) {
+  return { sha256: createHash('sha256').update(bytes).digest('hex'), version: manifest.version, access: requestedAccess(manifest) };
+}
+
+function samePath(first, second) {
+  if (typeof first !== 'string' || typeof second !== 'string') return false;
+  const paths = [path.resolve(first), path.resolve(second)];
+  return process.platform === 'win32' ? paths[0].toLowerCase() === paths[1].toLowerCase() : paths[0] === paths[1];
+}
+
+const proofError = 'Relay could not verify the signed LastPass package. Remove LastPass and reinstall it from the Chrome Web Store.';
+const proofNetworkError = 'Relay could not verify LastPass with the Chrome Web Store. Check your connection and restart Relay or reinstall LastPass.';
+const proofPermissionsError = 'LastPass now requests new permissions or site access. Remove it and reinstall it from the Chrome Web Store to review the changes.';
+
+class LastPassProofError extends Error {}
+
 function extensionPage(extension) {
   const { manifest, id } = extension;
   const page = manifest.action?.default_popup || manifest.browser_action?.default_popup ||
@@ -310,6 +343,7 @@ function createExtensionManager({ browserSession, userData, selectDirectory, con
   const root = path.resolve(userData, 'extensions');
   const registryPath = path.join(root, 'registry.json');
   const records = new Map();
+  const storeManifests = new Map();
   const workerProbes = new WeakMap();
   const runtimeErrors = new WeakMap();
   let queue = Promise.resolve();
@@ -325,17 +359,20 @@ function createExtensionManager({ browserSession, userData, selectDirectory, con
     return record.source === 'store' ? path.join(root, record.id) : record.directory;
   }
 
-  async function save(entries) {
-    const temporary = path.join(root, 'registry-' + randomUUID() + '.tmp');
+  async function writeAtomically(file, contents) {
+    const temporary = file + '.' + randomUUID() + '.tmp';
     try {
-      const persisted = entries.map(({ id, source, directory, name, version }) => (
-        { id, source, directory, name, version }
-      ));
-      await fs.writeFile(temporary, JSON.stringify(persisted, null, 2), { flag: 'wx' });
-      await fs.rename(temporary, registryPath);
+      await fs.writeFile(temporary, contents, { flag: 'wx' });
+      await fs.rename(temporary, file);
     } finally {
       await fs.rm(temporary, { force: true }).catch(() => {});
     }
+  }
+
+  async function save(entries) {
+    const persisted = entries.map(({ id, source, directory, name, version, approvedPackage }) =>
+      ({ id, source, directory, name, version, approvedPackage }));
+    await writeAtomically(registryPath, JSON.stringify(persisted, null, 2));
   }
 
   async function ensureRegistryRoot() {
@@ -354,23 +391,120 @@ function createExtensionManager({ browserSession, userData, selectDirectory, con
     await fs.rm(directory, { recursive: true, force: true });
   }
 
-  async function load(record) {
+  function proofPath() {
+    return path.join(root, LASTPASS_ID + '.crx');
+  }
+
+  async function readProof() {
+    try {
+      const info = await fs.lstat(proofPath());
+      if (!info.isFile() || info.isSymbolicLink() || info.size > archiveLimit) throw new LastPassProofError(proofError);
+      return await fs.readFile(proofPath());
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  async function readInstalledManifest(record) {
     const folder = installedPath(record);
     if (record.source === 'store') {
       const info = await fs.lstat(folder);
-      if (!info.isDirectory() || info.isSymbolicLink()) {
-        throw new Error('Relay’s extension package folder is invalid.');
-      }
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Relay’s extension package folder is invalid.');
     }
-    const keyId = manifestKeyId(await readManifest(folder));
+    return readManifest(folder);
+  }
+
+  async function load(record, verifiedManifest = null) {
+    const folder = installedPath(record);
+    const manifest = await readInstalledManifest(record);
+    const keyId = manifestKeyId(manifest);
     if (record.id && keyId && record.id !== keyId) throw new Error('The extension ID changed.');
     if (record.source === 'store' && !keyId) throw new Error('Missing Chrome Web Store extension key.');
-    const extension = await extensions.loadExtension(folder, { allowFileAccess: false });
-    if (record.id && record.id !== extension.id) {
-      extensions.removeExtension(extension.id);
-      throw new Error('The extension ID changed.');
+
+    const grant = record.id === LASTPASS_ID && record.source === 'store' && verifiedManifest
+      ? { folder, manifest: verifiedManifest, loading: true }
+      : null;
+    if (grant) {
+      if (JSON.stringify(manifest) !== JSON.stringify(verifiedManifest)) throw new LastPassProofError(proofError);
+      storeManifests.set(record.id, grant);
     }
-    return extension;
+    try {
+      const extension = await extensions.loadExtension(folder, { allowFileAccess: false });
+      if ((record.id && record.id !== extension.id) || (grant && !samePath(extension.path, folder))) {
+        extensions.removeExtension(extension.id);
+        throw new Error('The loaded extension did not match its verified installation.');
+      }
+      return extension;
+    } catch (error) {
+      if (grant) storeManifests.delete(record.id);
+      throw error;
+    }
+  }
+
+  function finishVerifiedLoad(id) {
+    const grant = storeManifests.get(id);
+    if (grant) grant.loading = false;
+  }
+
+  async function withStorePackage(id, bytes, use) {
+    const { archive, developerKey } = verifyStorePackage(bytes, id);
+    const staging = await fs.mkdtemp(path.join(root, 'staging-'));
+    let promoted = false;
+    try {
+      await extractArchive(archive, staging);
+      const manifest = await readManifest(staging);
+      return await use(staging, manifest, async () => {
+        const folder = installedPath({ id, source: 'store' });
+        manifest.key = developerKey.toString('base64');
+        await fs.writeFile(path.join(staging, 'manifest.json'), JSON.stringify(manifest));
+        await removeManagedDirectory(folder);
+        await fs.rename(staging, folder);
+        promoted = true;
+      });
+    } finally {
+      if (!promoted) await removeManagedDirectory(staging).catch(() => {});
+    }
+  }
+
+  async function restoreLastPass(record) {
+    let bytes = await readProof();
+    const previous = record.approvedPackage;
+    if (previous !== undefined && !bytes) throw new LastPassProofError(proofError);
+    let legacyAccess;
+    if (previous === undefined) {
+      const manifest = await readInstalledManifest(record);
+      if (manifestKeyId(manifest) !== LASTPASS_ID || manifest.version !== record.version) {
+        throw new LastPassProofError(proofError);
+      }
+      legacyAccess = requestedAccess(manifest);
+      if (!bytes) {
+        try {
+          bytes = await downloadStorePackage(LASTPASS_ID, process.versions.chrome, 10000);
+        } catch {
+          throw new LastPassProofError(proofNetworkError);
+        }
+      }
+    }
+
+    return withStorePackage(LASTPASS_ID, bytes, async (_folder, manifest, promote) => {
+      const approval = approvalFor(bytes, manifest);
+      if (!accessWithin(previous === undefined ? legacyAccess : previous?.access, approval.access)) {
+        throw new LastPassProofError(proofPermissionsError);
+      }
+      if (previous !== undefined && (previous.sha256 !== approval.sha256 ||
+          previous.version !== approval.version || record.version !== approval.version)) {
+        throw new LastPassProofError(proofError);
+      }
+      if (previous === undefined) {
+        await writeAtomically(proofPath(), bytes);
+        record.approvedPackage = approval;
+        record.version = approval.version;
+        await save([...records.values()]);
+      }
+      await promote();
+      return load(record, manifest);
+    });
   }
 
   function restore() {
@@ -390,14 +524,19 @@ function createExtensionManager({ browserSession, userData, selectDirectory, con
             (record.source === 'unpacked' && (typeof record.directory !== 'string' || !path.isAbsolute(record.directory)))) {
           continue;
         }
+        records.set(record.id, record);
+      }
+      for (const record of records.values()) {
+        const needsProof = record.id === LASTPASS_ID && record.source === 'store';
         try {
-          const extension = await load(record);
+          const extension = await (needsProof ? restoreLastPass(record) : load(record));
           record.name = extension.name;
           record.version = extension.version;
-        } catch {
-          record.error = 'Unable to load. Verify the folder still exists and the extension is compatible.';
+          finishVerifiedLoad(record.id);
+        } catch (error) {
+          record.error = error instanceof LastPassProofError ? error.message : needsProof ? proofError :
+            'Unable to load. Verify the folder still exists and the extension is compatible.';
         }
-        records.set(record.id, record);
       }
     });
     return restorePromise;
@@ -429,15 +568,17 @@ function createExtensionManager({ browserSession, userData, selectDirectory, con
     });
   }
 
-  async function register(extension, source, directory) {
-    const record = { id: extension.id, name: extension.name, version: extension.version, source, directory };
+  async function register(extension, source, directory, approvedPackage) {
+    const record = { id: extension.id, name: extension.name, version: extension.version, source, directory, approvedPackage };
     try {
       await save([...records.values(), record]);
     } catch (error) {
+      if (source === 'store') storeManifests.delete(record.id);
       extensions.removeExtension(record.id);
       throw error;
     }
     records.set(record.id, record);
+    finishVerifiedLoad(record.id);
     return true;
   }
 
@@ -464,27 +605,21 @@ function createExtensionManager({ browserSession, userData, selectDirectory, con
     return serialize(async () => {
       if (records.has(id)) throw new Error('This extension is already registered.');
       const bytes = await downloadStorePackage(id, process.versions.chrome);
-      const { archive, developerKey } = verifyStorePackage(bytes, id);
-      const staging = await fs.mkdtemp(path.join(root, 'staging-'));
-      const directory = installedPath({ id, source: 'store' });
-      let promoted = false;
-      try {
-        await extractArchive(archive, staging);
-        const manifest = await readManifest(staging);
+      return withStorePackage(id, bytes, async (staging, manifest, promote) => {
         if (!await approve(staging, manifest, 'store')) return false;
-        manifest.key = developerKey.toString('base64');
-        await fs.writeFile(path.join(staging, 'manifest.json'), JSON.stringify(manifest));
-        await removeManagedDirectory(directory);
-        await fs.rename(staging, directory);
-        promoted = true;
-        const extension = await load({ id, source: 'store' });
-        return await register(extension, 'store');
-      } catch (error) {
-        if (promoted) await removeManagedDirectory(directory).catch(() => {});
-        throw error;
-      } finally {
-        if (!promoted) await removeManagedDirectory(staging).catch(() => {});
-      }
+        const approval = id === LASTPASS_ID ? approvalFor(bytes, manifest) : undefined;
+        if (approval) await writeAtomically(proofPath(), bytes);
+        try {
+          await promote();
+          const extension = await load({ id, source: 'store' }, approval ? manifest : null);
+          return await register(extension, 'store', undefined, approval);
+        } catch (error) {
+          storeManifests.delete(id);
+          await removeManagedDirectory(installedPath({ id, source: 'store' })).catch(() => {});
+          if (approval) await fs.rm(proofPath(), { force: true }).catch(() => {});
+          throw error;
+        }
+      });
     });
   }
 
@@ -494,9 +629,13 @@ function createExtensionManager({ browserSession, userData, selectDirectory, con
       const record = records.get(id);
       if (!record) return false;
       await save([...records.values()].filter(entry => entry.id !== id));
+      storeManifests.delete(id);
       if (extensions.getExtension(id)) extensions.removeExtension(id);
       records.delete(id);
-      if (record.source === 'store') await removeManagedDirectory(installedPath(record)).catch(() => {});
+      if (record.source === 'store') {
+        await removeManagedDirectory(installedPath(record)).catch(() => {});
+        if (id === LASTPASS_ID) await fs.rm(proofPath(), { force: true }).catch(() => {});
+      }
       return true;
     });
   }
@@ -535,7 +674,16 @@ function createExtensionManager({ browserSession, userData, selectDirectory, con
     throw new Error(workerStartupError);
   }
 
-  return { restore, list, loadUnpacked, installFromStore, remove, getPageUrl, prepareOpen };
+  function getStoreExtension(id) {
+    const grant = storeManifests.get(id);
+    if (!grant) return null;
+    const native = extensions.getExtension(id);
+    if (native && !samePath(native.path, grant.folder)) return null;
+    if (!grant.loading && (!native || records.get(id)?.source !== 'store')) return null;
+    return { id, manifest: grant.manifest };
+  }
+
+  return { restore, list, loadUnpacked, installFromStore, remove, getPageUrl, prepareOpen, getStoreExtension };
 }
 
 module.exports = { createExtensionManager, storeId, storeListingId, verifyStorePackage };

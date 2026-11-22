@@ -156,6 +156,8 @@ button, input, select, textarea, [tabindex] { -webkit-app-region: no-drag; }
 
 .toolbar-frame, .utility-frame { contain: paint; flex: 0 0 auto; }
 .navigation-buttons, .toolbar-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.lastpass-button { position: relative; }
+.extension-badge { position: absolute; inset: auto 1px 2px auto; min-width: 11px; padding: 0 2px; border-radius: 3px; background: #17221f; color: white; font-size: 9px; font-weight: 700; line-height: 11px; }
 .address-form { display: flex; align-items: center; flex: 1 1 0; min-width: 0; gap: 8px; height: 35px; padding: 0 4px 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--field); color: var(--muted); }
 .address-form:focus-within { border-color: var(--border-emphasis); box-shadow: 0 0 0 1px var(--border-emphasis); }
 .address-form > .icon { width: 15px; height: 15px; }

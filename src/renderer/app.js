@@ -20,6 +20,8 @@
   const notice = get('notice');
   const storeStrip = get('storeStrip');
   const storeAction = get('storeAction');
+  const lastPassButton = get('lastPassButton');
+  const lastPassBadge = get('lastPassBadge');
   const searchDialog = get('searchProviderDialog');
   const searchOptions = get('searchProviderOptions');
   const searchCancel = get('cancelSearchProvider');
@@ -68,6 +70,7 @@
   let agentAdvancedOpen = false;
   let searchPrompt = null;
   let searchSubmission = null;
+  let openingLastPass = false;
 
   const tabStrip = node('div', 'tabs-strip');
   tabStrip.setAttribute('role', 'tablist');
@@ -133,6 +136,15 @@
     document.body.dataset.tabPosition = state.preferences.tabPosition;
     document.body.dataset.theme = state.preferences.theme;
     get('agentDot').hidden = !state.agent.enabled && !hasConnectedProvider();
+    const lastPass = state.lastPassAction;
+    lastPassButton.hidden = !lastPass;
+    lastPassButton.disabled = openingLastPass || !lastPass?.enabled;
+    lastPassBadge.textContent = lastPass?.badgeText.slice(0, 4) || '';
+    lastPassBadge.hidden = !lastPassBadge.textContent;
+    if (lastPass) {
+      const [r, g, b, a] = lastPass.badgeColor;
+      lastPassBadge.style.backgroundColor = `rgba(${r}, ${g}, ${b}, ${a / 255})`;
+    }
 
     const maximize = get('maximize');
     maximize.title = state.maximized ? 'Restore' : 'Maximize';
@@ -1195,6 +1207,17 @@
     if (!listing) return;
     if (listing.installed) showPanel('extensions', storeAction);
     else installCurrentStoreListing(listing.id);
+  });
+  lastPassButton.addEventListener('click', async () => {
+    const { x, y, width, height } = lastPassButton.getBoundingClientRect();
+    openingLastPass = true;
+    lastPassButton.disabled = true;
+    try {
+      await run('openExtension', { id: 'hdokiejnpimakedhajhdlcegeplioahd', anchor: { x, y, width, height } });
+    } finally {
+      openingLastPass = false;
+      lastPassButton.disabled = !state?.lastPassAction?.enabled;
+    }
   });
   get('addressForm').addEventListener('submit', (event) => navigateForm(event, address));
   get('startForm').addEventListener('submit', (event) => navigateForm(event, get('startSearch'), true));

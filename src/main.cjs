@@ -12,6 +12,9 @@ const { classifyAddress, searchURL, SEARCH_PROVIDERS } = require('./address.cjs'
 const { createAgentBridge } = require('./agent/bridge.cjs');
 const { validatePreferencesPatch } = require('./agent/preferences.cjs');
 const { createExtensionManager, storeListingId } = require('./extensions.cjs');
+const { LASTPASS_ID, isLastPassPage, registerLastPassCompatibility } = require('./lastpass-compat.cjs');
+const { createLastPassApi } = require('./lastpass-api.cjs');
+const { createExtensionPopup } = require('./extension-popup.cjs');
 const { listBrowserCommands, validateBrowserCommand } = require('./commands.cjs');
 const { defaultCustomization, updateCustomization, keyboardAccelerator } = require('./customization.cjs');
 const { collectPageText } = require('./page-content.cjs');
@@ -32,12 +35,17 @@ const STORAGE_TYPES = ['backgroundFetch', 'fileSystems', 'indexedDB', 'localStor
 app.setName('Relay Browser');
 app.enableSandbox();
 app.setAppUserModelId('org.relaybrowser.desktop');
+const chromiumUserAgent = (value) => value.replace(/\s(?:Electron|RelayBrowser|relay-browser)\/[^ ]+/gi, '');
+app.userAgentFallback = chromiumUserAgent(app.userAgentFallback);
 protocol.registerSchemesAsPrivileged([{ scheme: 'relay', privileges: { standard: true, secure: true } }]);
 
 let win;
 let profile;
 let browserSession;
 let extensions;
+let lastPassApi;
+let lastPassPopup;
+let emitLastPass;
 let agent;
 let providerConnections;
 let discoveryPath;
@@ -55,9 +63,149 @@ const tabs = [];
 const closedTabs = [];
 const activeDownloads = new Map();
 const sitePermissions = new Map();
+const lastPassWindows = new Map();
 
 function activeTab() {
   return tabs.find((tab) => tab.id === activeTabId);
+}
+
+function chromeTab(tab) {
+  const wc = tab?.view?.webContents;
+  if (!wc || wc.isDestroyed()) return undefined;
+  const active = tab === activeTab();
+  const canShareLocation = !tab.url || webURL(tab.url) || isLastPassPage(tab.url);
+  return {
+    id: wc.id, windowId: win.id, index: tabs.indexOf(tab), active, highlighted: active,
+    pinned: tab.pinned, status: wc.isLoading() ? 'loading' : 'complete', incognito: false,
+    ...(canShareLocation ? { url: tab.url || 'about:blank', title: tab.title } : {}),
+    audible: wc.isCurrentlyAudible(), mutedInfo: { muted: wc.isAudioMuted() }
+  };
+}
+
+function hasLastPassPermission(permission) {
+  return Boolean(extensions?.getStoreExtension(LASTPASS_ID)?.manifest.permissions?.includes(permission));
+}
+
+function updateChromeTab(tab, changes) {
+  if (!hasLastPassPermission('tabs')) return;
+  const current = chromeTab(tab);
+  if (current?.url) emitLastPass('tabs.onUpdated', [current.id, changes, current]);
+}
+
+function chromeWindow(target) {
+  if (!target || target.isDestroyed()) return undefined;
+  const { x, y, width, height } = target.getBounds();
+  const state = target.isMinimized() ? 'minimized' : target.isMaximized() ? 'maximized' : target.isFullScreen() ? 'fullscreen' : 'normal';
+  return {
+    id: target.id, left: x, top: y, width, height, state, incognito: false,
+    focused: target.isFocused() || (target === win && Boolean(lastPassPopup.getWindow()?.isFocused())),
+    type: target === win ? 'normal' : 'popup', alwaysOnTop: target.isAlwaysOnTop()
+  };
+}
+
+function emitWindowFocus() {
+  if (closing) return;
+  const focused = BrowserWindow.getFocusedWindow();
+  const id = !focused ? -1 : focused === lastPassPopup.getWindow() ? win.id : focused.id;
+  emitLastPass('windows.onFocusChanged', [id]);
+}
+
+function showLastPassWindow({ url, focused, left, top, width, height }) {
+  url = Array.isArray(url) ? url[0] : url;
+  if (!url || url === 'about:blank') {
+    addTab('', { activate: focused !== false });
+    return chromeWindow(win);
+  }
+  if (!isLastPassPage(url)) {
+    if (!webURL(url)) throw new Error('This extension window cannot be opened.');
+    addTab(url, { activate: focused !== false });
+    return chromeWindow(win);
+  }
+  if (lastPassWindows.size >= 5) throw new Error('Close a LastPass window before opening another.');
+  const child = new BrowserWindow({
+    parent: win, title: 'LastPass', width: width ?? 520, height: height ?? 660, x: left, y: top,
+    show: false, autoHideMenuBar: true,
+    webPreferences: { session: browserSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webviewTag: false }
+  });
+  lastPassWindows.set(child.id, child);
+  const openWeb = (target) => { if (webURL(target)) setImmediate(() => attempt(() => addTab(target))); };
+  function restrictNavigation(event) {
+    if (isLastPassPage(event.url)) return;
+    event.preventDefault();
+    openWeb(event.url);
+  }
+  child.webContents.on('will-navigate', restrictNavigation);
+  child.webContents.on('will-redirect', (event) => { if (event.isMainFrame) restrictNavigation(event); });
+  child.webContents.setWindowOpenHandler(({ url: target, postBody }) => {
+    if (!postBody) openWeb(target);
+    return { action: 'deny' };
+  });
+  child.on('focus', emitWindowFocus);
+  child.on('blur', () => setImmediate(emitWindowFocus));
+  const id = child.id;
+  child.on('closed', () => {
+    lastPassWindows.delete(id);
+    if (!closing) emitLastPass('windows.onRemoved', [id]);
+  });
+  child.once('ready-to-show', () => { if (focused === false) child.showInactive(); else child.show(); });
+  void child.loadURL(url).catch(() => { if (!child.isDestroyed()) child.close(); });
+  const window = chromeWindow(child);
+  emitLastPass('windows.onCreated', [window]);
+  return window;
+}
+
+function lastPassController() {
+  const tabById = (id) => tabs.find((tab) => chromeTab(tab)?.id === id);
+  const windowById = (id) => id == null || id === -2 || id === win.id ? win : lastPassWindows.get(id);
+  return {
+    getTabs: () => tabs.map(chromeTab).filter(Boolean),
+    getActiveTab: () => chromeTab(activeTab()),
+    getWindow: (id) => chromeWindow(windowById(id)),
+    getWindows: () => [win, ...lastPassWindows.values()].map(chromeWindow).filter(Boolean),
+    createTab({ url, active, pinned }) {
+      const tab = addTab(url === 'about:blank' ? '' : url, { activate: active !== false, pinned });
+      attachView(tab);
+      return chromeTab(tab);
+    },
+    updateTab(id, changes) {
+      const tab = tabById(id);
+      if (!tab) throw new Error('No such tab.');
+      if (changes.url === 'about:blank') goHome(tab);
+      else if (changes.url) navigate(tab, changes.url);
+      if (changes.active) selectTab(tab);
+      if (changes.pinned !== undefined) pinTab(tab, changes.pinned);
+      if (changes.muted !== undefined) tab.view.webContents.setAudioMuted(changes.muted);
+      broadcast();
+      attachView(tab);
+      return chromeTab(tab);
+    },
+    removeTab(id) {
+      const tab = tabById(id);
+      if (!tab) throw new Error('No such tab.');
+      closeTab(tab);
+    },
+    createWindow: showLastPassWindow,
+    updateWindow(id, { focused, state, left, top, width, height }) {
+      const target = windowById(id);
+      if (!target) throw new Error('No such window.');
+      if (target !== win) {
+        const current = target.getBounds();
+        target.setBounds({ x: left ?? current.x, y: top ?? current.y, width: width ?? current.width, height: height ?? current.height });
+        if (state === 'minimized') target.minimize();
+        if (state === 'maximized') target.maximize();
+        if (state === 'normal') target.restore();
+      }
+      if (focused) target.focus();
+      return chromeWindow(target);
+    },
+    removeWindow(id) {
+      const target = lastPassWindows.get(id);
+      if (!target) throw new Error('No such extension window.');
+      target.close();
+    },
+    openPopup: () => openLastPassPopup(),
+    actionChanged: broadcast,
+  };
 }
 
 function saveSoon() {
@@ -130,8 +278,12 @@ function getState() {
   const browser = getBrowserState();
   const extensionId = currentStoreListing();
   const installedExtension = browser.extensions.find(({ id }) => id === extensionId);
+  const lastPass = lastPassApi.getAction(chromeTab(activeTab())?.id);
   return {
     ...browser,
+    lastPassAction: lastPass ? {
+      enabled: lastPass.enabled, badgeText: lastPass.badgeText, badgeColor: lastPass.badgeBackgroundColor,
+    } : null,
     pendingSearch: pendingSearch ? { id: pendingSearch.id, query: pendingSearch.query } : null,
     searchProviders: SEARCH_PROVIDERS,
     storeListing: extensionId ? {
@@ -226,10 +378,19 @@ function recordVisit(tab, url) {
 
 function setNavigated(tab, url, sameDocument = false) {
   if (!webURL(url) && !extensionPage(url)) return;
+  if (tab === activeTab() && tab.url !== url) lastPassPopup.close();
   if (!sameDocument) tab.title = new URL(url).hostname;
   tab.url = url;
   tab.error = '';
   recordVisit(tab, url);
+  updateChromeTab(tab, { url });
+  if (webURL(url) && hasLastPassPermission('webNavigation')) {
+    const current = chromeTab(tab);
+    if (current) emitLastPass(sameDocument ? 'webNavigation.onHistoryStateUpdated' : 'webNavigation.onCommitted', [{
+      tabId: current.id, url, frameId: 0, parentFrameId: -1, timeStamp: Date.now(),
+      ...(sameDocument ? {} : { transitionType: 'link', transitionQualifiers: [] })
+    }]);
+  }
   updateView();
   broadcast();
   saveSoon();
@@ -254,6 +415,7 @@ function installContextMenu(tab) {
       { label: 'Reload', click: () => wc.reload() },
       { label: 'Print…', click: () => wc.print() }
     );
+    lastPassApi?.appendContextMenu(items, params, chromeTab(tab));
     Menu.buildFromTemplate(items).popup({ window: win });
   });
 }
@@ -278,6 +440,9 @@ function attachView(tab) {
     return { action: 'deny' };
   });
   wc.on('will-attach-webview', (event) => event.preventDefault());
+  wc.on('did-start-navigation', (event) => {
+    if (event.isMainFrame && tab === activeTab()) lastPassPopup.close();
+  });
   wc.on('did-navigate', (_event, url) => setNavigated(tab, url));
   wc.on('did-navigate-in-page', (_event, url, isMainFrame) => { if (isMainFrame) setNavigated(tab, url, true); });
   wc.on('page-title-updated', (_event, title) => {
@@ -285,11 +450,12 @@ function attachView(tab) {
     tab.title = title.trim().slice(0, 300) || new URL(tab.url).hostname;
     const visit = profile.data.history.find((item) => item.tabId === tab.id && item.url === tab.url);
     if (visit) visit.title = tab.title;
+    updateChromeTab(tab, { title: tab.title });
     broadcast();
     saveSoon();
   });
-  wc.on('did-start-loading', broadcast);
-  wc.on('did-stop-loading', broadcast);
+  wc.on('did-start-loading', () => { updateChromeTab(tab, { status: 'loading' }); broadcast(); });
+  wc.on('did-stop-loading', () => { updateChromeTab(tab, { status: 'complete' }); broadcast(); });
   wc.on('audio-state-changed', broadcast);
   wc.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
     if (isMainFrame && code !== -3 && (webURL(url) || extensionPage(url))) {
@@ -312,6 +478,7 @@ function attachView(tab) {
   });
   installContextMenu(tab);
   installShortcuts(wc);
+  if (hasLastPassPermission('tabs')) emitLastPass('tabs.onCreated', [chromeTab(tab)]);
 }
 
 function navigate(tab, url) {
@@ -333,9 +500,15 @@ function navigate(tab, url) {
 }
 
 function selectTab(tab, focus = true) {
+  const changed = activeTabId !== tab.id;
+  if (changed) lastPassPopup.close();
   activeTabId = tab.id;
   if (tab.url && !tab.view && !tab.error) navigate(tab, tab.url);
   updateView(focus);
+  if (changed && extensions.getStoreExtension(LASTPASS_ID)) {
+    const current = chromeTab(tab);
+    if (current) emitLastPass('tabs.onActivated', [{ tabId: current.id, windowId: current.windowId }]);
+  }
   broadcast();
   saveSoon();
 }
@@ -367,9 +540,17 @@ function closeTab(tab, remember = true) {
     if (next) selectTab(next);
     else addTab();
   }
+  releaseExtensionTab(tab.view);
   tab.view?.webContents.close();
   broadcast();
   saveSoon();
+}
+
+function releaseExtensionTab(view) {
+  const wc = view?.webContents;
+  if (!wc || wc.isDestroyed() || !extensions.getStoreExtension(LASTPASS_ID)) return;
+  lastPassApi.clearTab(wc.id);
+  emitLastPass('tabs.onRemoved', [wc.id, { windowId: win.id, isWindowClosing: closing }]);
 }
 
 function pinTab(tab, pinned = !tab.pinned) {
@@ -394,9 +575,11 @@ function moveTab(tab, index) {
 function goHome(tab) {
   const home = profile.data.preferences.homepage;
   if (home) return navigate(tab, home);
+  if (tab === activeTab()) lastPassPopup.close();
   const view = tab.view;
   Object.assign(tab, { view: undefined, url: '', title: 'New tab', error: '' });
   updateView(true);
+  releaseExtensionTab(view);
   view?.webContents.close();
   saveSoon();
 }
@@ -577,6 +760,21 @@ function currentStoreListing() {
   return storeListingId(activeTab()?.url);
 }
 
+async function openLastPassPopup(anchor) {
+  const active = activeTab();
+  const url = active?.url;
+  const page = await extensions.prepareOpen(LASTPASS_ID);
+  if (!page || !extensions.getStoreExtension(LASTPASS_ID) || active !== activeTab() || url !== active?.url) return false;
+  const tab = chromeTab(active);
+  const action = lastPassApi.getAction(tab?.id);
+  if (!action?.enabled) return false;
+  if (!action.popup) {
+    if (tab) emitLastPass('browserAction.onClicked', [tab]);
+    return true;
+  }
+  return Boolean(await lastPassPopup.open(action.popup, anchor));
+}
+
 function openResolvedAddress(url, tab) {
   if (!tab) return { id: addTab(url).id };
   navigate(tab, url);
@@ -674,9 +872,16 @@ async function runAction(name, p = {}) {
       for (const tab of tabs.slice()) {
         if (extensionPage(tab.url) && new URL(tab.url).hostname === p.id) closeTab(tab, false);
       }
-      return extensions.remove(p.id);
+      const removed = await extensions.remove(p.id);
+      if (removed && p.id === LASTPASS_ID) {
+        lastPassPopup.close();
+        for (const child of lastPassWindows.values()) child.close();
+        lastPassApi.reset();
+      }
+      return removed;
     }
     case 'openExtension': {
+      if (p.id === LASTPASS_ID && extensions.getStoreExtension(LASTPASS_ID)) return openLastPassPopup(p.anchor);
       const url = await extensions.prepareOpen(p.id);
       if (!url) throw new Error('This extension does not expose a popup or options page.');
       addTab(url);
@@ -873,8 +1078,7 @@ async function launch() {
   browserSession = session.fromPartition('persist:relay-browser');
   configurePermissions(browserSession);
   browserSession.on('will-download', (_event, item, wc) => trackDownload(item, wc));
-  const originalUserAgent = browserSession.getUserAgent();
-  browserSession.setUserAgent(originalUserAgent.replace(/\s(?:Electron|RelayBrowser|relay-browser)\/[^ ]+/gi, ''));
+  browserSession.setUserAgent(chromiumUserAgent(browserSession.getUserAgent()));
   win = new BrowserWindow({
     title: 'Relay Browser', width: 1280, height: 840, minWidth: 820, minHeight: 540,
     frame: false, show: false, backgroundColor: '#101816', icon: path.join(__dirname, '..', 'build', 'icon.ico'),
@@ -896,16 +1100,26 @@ async function launch() {
       return result.response === 1;
     }
   });
+  lastPassPopup = createExtensionPopup({ parent: win, browserSession, openExternalPage: (url) => attempt(() => addTab(url)) });
+  const getStoreExtension = (id) => extensions.getStoreExtension(id);
+  lastPassApi = createLastPassApi({
+    browserSession, getExtension: getStoreExtension, controller: lastPassController(),
+    emit: (name, args) => emitLastPass(name, args),
+  });
+  emitLastPass = registerLastPassCompatibility({ ipcMain, browserSession, getExtension: getStoreExtension, invoke: lastPassApi.invoke });
   await extensions.restore().catch((error) => console.error('Restoring extensions:', error));
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
   installShortcuts(win.webContents);
+  win.on('focus', emitWindowFocus);
+  win.on('blur', () => setImmediate(emitWindowFocus));
   for (const event of ['maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen', 'resize']) {
     win.on(event, () => { updateView(); broadcast(); });
   }
   win.on('close', () => {
     closing = true;
+    lastPassPopup.close();
     clearTimeout(saveTimer);
     try { saveProfile(); } catch (error) { console.error('Closing Relay profile:', error); }
   });

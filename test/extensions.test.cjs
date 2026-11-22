@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 const { createExtensionManager, storeId, storeListingId, verifyStorePackage } = require('../src/extensions.cjs');
+const { LASTPASS_ID } = require('../src/lastpass-api.cjs');
 
 const storeExample = 'caacnjeoikecoeepknkbjdcaediamaej';
 
@@ -89,7 +90,7 @@ function fakeSession(id) {
       async loadExtension(directory, options) {
         assert.equal(options.allowFileAccess, false);
         const manifest = JSON.parse(await fs.readFile(path.join(directory, 'manifest.json'), 'utf8'));
-        const extension = { id, manifest, name: manifest.name, version: manifest.version };
+        const extension = { id, manifest, path: directory, name: manifest.name, version: manifest.version };
         loaded.set(id, extension);
         return extension;
       },
@@ -215,4 +216,56 @@ test('keeps declared extension pages usable when the Electron worker API is unav
   const manager = await installWorkerFixture(t);
   assert.equal(await manager.prepareOpen(storeExample), manager.getPageUrl(storeExample));
   assert.equal(manager.list()[0].runtimeError, null);
+});
+
+
+test('an unpacked LastPass ID does not obtain a verified Store bridge grant', async t => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'relay-unpacked-trust-test-'));
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const directory = path.join(folder, 'unpacked');
+  await fs.mkdir(directory);
+  await fs.writeFile(path.join(directory, 'manifest.json'), JSON.stringify({
+    manifest_version: 3, name: 'Unpacked LastPass ID fixture', version: '1.0',
+  }));
+  const browserSession = fakeSession(LASTPASS_ID);
+  const options = {
+    userData: path.join(folder, 'profile'), selectDirectory: async () => directory,
+    confirmInstall: async () => true,
+  };
+  const manager = createExtensionManager({ ...options, browserSession });
+  assert.equal(await manager.loadUnpacked(), true);
+  assert.ok(browserSession.extensions.getExtension(LASTPASS_ID));
+  assert.equal(manager.getStoreExtension(LASTPASS_ID), null);
+  const restarted = createExtensionManager({ ...options, browserSession: fakeSession(LASTPASS_ID) });
+  await restarted.restore();
+  assert.equal(restarted.list()[0].enabled, true);
+  assert.equal(restarted.getStoreExtension(LASTPASS_ID), null);
+});
+
+test('a previously approved LastPass never loads if its proof is missing or unreadable', async t => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'relay-lastpass-proof-test-'));
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const directory = path.join(folder, 'extensions');
+  await fs.mkdir(directory);
+  const packagePath = path.join(directory, LASTPASS_ID + '.crx');
+  const registry = path.join(directory, 'registry.json');
+  await fs.writeFile(registry, JSON.stringify([{
+    id: LASTPASS_ID, source: 'store', name: 'LastPass', version: '1.0',
+    approvedPackage: { sha256: 'a'.repeat(64), version: '1.0', access: {} },
+  }]));
+  const browserSession = fakeSession(LASTPASS_ID);
+  t.mock.method(browserSession.extensions, 'loadExtension', async () => assert.fail('Unverified LastPass must not load'));
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('Approved installs must not automatically fetch updates'));
+
+  for (const sidecar of [null, Buffer.from('invalid CRX')]) {
+    if (sidecar) await fs.writeFile(packagePath, sidecar);
+    const manager = createExtensionManager({ userData: folder, browserSession });
+    await manager.restore();
+    assert.equal(manager.getStoreExtension(LASTPASS_ID), null);
+    assert.equal(manager.list()[0].enabled, false);
+    assert.match(manager.list()[0].error, /verify the signed LastPass package/);
+  }
+  assert.equal(browserSession.extensions.loadExtension.mock.callCount(), 0);
+  assert.equal(globalThis.fetch.mock.callCount(), 0);
+  assert.equal(JSON.parse(await fs.readFile(registry, 'utf8'))[0].id, LASTPASS_ID);
 });
